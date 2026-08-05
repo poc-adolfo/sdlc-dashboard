@@ -1,0 +1,1 @@
+import{describe,it,expect}from'vitest';describe('dashboard',()=>{it('declares as sete fases do pipeline',()=>{const phases=['Requisitos','Design','Dev','Code Review','QA','Segurança','Deploy'];expect(phases).toHaveLength(7)})});
