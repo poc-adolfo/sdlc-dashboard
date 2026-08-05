@@ -1,4 +1,3 @@
-using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net;
@@ -20,44 +19,34 @@ public sealed class WebhookPhaseIntegrationTests : IClassFixture<WebhookPhaseFac
     public WebhookPhaseIntegrationTests(WebhookPhaseFactory factory) => this.factory = factory;
 
     [Fact]
-    public async Task Correct_tenant_is_allowed_and_wrong_tenant_is_rejected()
+    public async Task Webhook_rejects_missing_or_wrong_api_key_and_missing_tenant()
     {
-        var externalRef = $"integration-{Guid.NewGuid():N}";
-        await using (var scope = factory.Services.CreateAsyncScope())
-        {
-            var db = scope.ServiceProvider.GetRequiredService<DashboardDb>();
-            var workspace = new Workspace { TenantId = "tenant-correct", Name = "integration", Slug = externalRef };
-            db.Workspaces.Add(workspace);
-            db.Pipelines.Add(new PipelineInstance { WorkspaceId = workspace.Id, ExternalRef = externalRef });
-            await db.SaveChangesAsync();
-        }
+        using var client = factory.CreateClient(); var eventData = new PhaseEvent("does-not-matter", "Design", "test", GateStatus.Pending);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await client.PostAsJsonAsync("/api/webhooks/phase", eventData)).StatusCode);
+        client.DefaultRequestHeaders.Add("X-API-Key", "wrong"); Assert.Equal(HttpStatusCode.Unauthorized, (await client.PostAsJsonAsync("/api/webhooks/phase", eventData)).StatusCode);
+        client.DefaultRequestHeaders.Remove("X-API-Key"); client.DefaultRequestHeaders.Add("X-API-Key", "integration-key");
+        Assert.Equal(HttpStatusCode.BadRequest, (await client.PostAsJsonAsync("/api/webhooks/phase", eventData)).StatusCode);
+    }
 
-        using var client = factory.CreateClient();
-        var payload = new PhaseEvent(externalRef, "Design", "integration.test", GateStatus.Pending);
-        client.DefaultRequestHeaders.Add("X-API-Key", "integration-key");
-        client.DefaultRequestHeaders.Add("X-Tenant-Id", "tenant-wrong");
-        var wrong = await client.PostAsJsonAsync("/api/webhooks/phase", payload);
-        Assert.Equal(HttpStatusCode.Forbidden, wrong.StatusCode);
+    [Fact]
+    public async Task Webhook_returns_not_found_for_unknown_external_ref()
+    {
+        using var client = factory.CreateClient(); client.DefaultRequestHeaders.Add("X-API-Key", "integration-key"); client.DefaultRequestHeaders.Add("X-Tenant-Id", "tenant-correct");
+        Assert.Equal(HttpStatusCode.NotFound, (await client.PostAsJsonAsync("/api/webhooks/phase", new PhaseEvent("missing", "Design", "test", GateStatus.Pending))).StatusCode);
+    }
 
-        client.DefaultRequestHeaders.Remove("X-Tenant-Id");
-        client.DefaultRequestHeaders.Add("X-Tenant-Id", "tenant-correct");
-        var correct = await client.PostAsJsonAsync("/api/webhooks/phase", payload);
-        Assert.Equal(HttpStatusCode.OK, correct.StatusCode);
-
-        await using var verifyScope = factory.Services.CreateAsyncScope();
-        var verifyDb = verifyScope.ServiceProvider.GetRequiredService<DashboardDb>();
-        Assert.Equal("Design", await verifyDb.Pipelines.Where(x => x.ExternalRef == externalRef).Select(x => x.CurrentPhase).SingleAsync());
+    [Fact]
+    public async Task Repeating_the_same_phase_event_is_idempotent()
+    {
+        var externalRef = $"idempotent-{System.Guid.NewGuid():N}";
+        await using (var scope = factory.Services.CreateAsyncScope()) { var db = scope.ServiceProvider.GetRequiredService<DashboardDb>(); var w = new Workspace { TenantId = "tenant-idempotent", Name = "integration", Slug = externalRef }; db.Workspaces.Add(w); db.Pipelines.Add(new PipelineInstance { WorkspaceId = w.Id, ExternalRef = externalRef }); await db.SaveChangesAsync(); }
+        using var client = factory.CreateClient(); client.DefaultRequestHeaders.Add("X-API-Key", "integration-key"); client.DefaultRequestHeaders.Add("X-Tenant-Id", "tenant-idempotent"); var payload = new PhaseEvent(externalRef, "Design", "integration.test", GateStatus.Pending);
+        Assert.Equal(HttpStatusCode.OK, (await client.PostAsJsonAsync("/api/webhooks/phase", payload)).StatusCode); Assert.Equal(HttpStatusCode.OK, (await client.PostAsJsonAsync("/api/webhooks/phase", payload)).StatusCode);
+        await using var verify = factory.Services.CreateAsyncScope(); var verifyDb = verify.ServiceProvider.GetRequiredService<DashboardDb>(); Assert.Equal(1, await verifyDb.Transitions.CountAsync(x => x.PipelineInstanceId == verifyDb.Pipelines.Single(x => x.ExternalRef == externalRef).Id));
     }
 }
 
 public sealed class WebhookPhaseFactory : WebApplicationFactory<Program>
 {
-    protected override void ConfigureWebHost(IWebHostBuilder builder)
-    {
-        builder.UseEnvironment("Development");
-        builder.ConfigureAppConfiguration((_, config) => config.AddInMemoryCollection(new Dictionary<string, string?>
-        {
-            ["Security:ApiKey"] = "integration-key"
-        }));
-    }
+    protected override void ConfigureWebHost(IWebHostBuilder builder) { builder.UseEnvironment("Development"); builder.ConfigureAppConfiguration((_, config) => config.AddInMemoryCollection(new Dictionary<string, string?> { ["Security:ApiKey"] = "integration-key" })); }
 }
