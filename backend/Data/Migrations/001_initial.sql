@@ -1,0 +1,2 @@
+-- Initial SQLite schema (also represented by AppDbContext for fresh deployments).
+-- Production deployments should apply this file through the migration runner.

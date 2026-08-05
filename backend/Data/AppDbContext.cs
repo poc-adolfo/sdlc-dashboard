@@ -1,0 +1,6 @@
+using Microsoft.EntityFrameworkCore; using SdlcDashboard.Api.Models;
+namespace SdlcDashboard.Api.Data;
+public class AppDbContext(DbContextOptions<AppDbContext> options):DbContext(options) {
+ public DbSet<Client> Clients=>Set<Client>(); public DbSet<Workspace> Workspaces=>Set<Workspace>(); public DbSet<Assessment> Assessments=>Set<Assessment>(); public DbSet<Spec> Specs=>Set<Spec>(); public DbSet<PipelineInstance> Pipelines=>Set<PipelineInstance>(); public DbSet<PhaseTransition> PhaseTransitions=>Set<PhaseTransition>(); public DbSet<PerfilCredential> Credentials=>Set<PerfilCredential>();
+ protected override void OnModelCreating(ModelBuilder b){ b.Entity<Client>().HasKey(x=>x.Id); b.Entity<Workspace>().HasIndex(x=>new{x.TenantId,x.Slug}).IsUnique(); b.Entity<Workspace>().HasOne(x=>x.Client).WithMany(x=>x.Workspaces).HasForeignKey(x=>x.ClientId); b.Entity<Assessment>().HasIndex(x=>new{x.WorkspaceId,x.Status}); b.Entity<Spec>().HasIndex(x=>new{x.WorkspaceId,x.Path}).IsUnique(); b.Entity<PipelineInstance>().HasOne<Workspace>().WithMany().HasForeignKey(x=>x.WorkspaceId); b.Entity<PhaseTransition>().HasIndex(x=>new{x.PipelineInstanceId,x.SourceEvent}).IsUnique(); b.Entity<PerfilCredential>().HasIndex(x=>new{x.WorkspaceId,x.Perfil}).IsUnique(); }
+}
