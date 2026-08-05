@@ -8,6 +8,8 @@ Frontend operacional do pipeline SDLC Hermes: assessment, gênese de ciclo, cred
 
 ## Desenvolvimento
 
+A API é protegida por `X-API-Key` e `X-Tenant-Id`. Ela falha fechada: configure `Security:ApiKey` e ao menos uma origem em `Security:AllowedOrigins` (variáveis de ambiente equivalentes: `Security__ApiKey` e `Security__AllowedOrigins__0`) antes de iniciar.
+
 ```bash
 cd backend && dotnet run
 cd frontend && npm install && npm run dev
