@@ -1,3 +1,6 @@
+using System;
+using System.Threading.Tasks;
+using Xunit;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using SDLC.Dashboard;
@@ -18,5 +21,10 @@ public class SecurityAndCredentialsTests
         var credential = await new CredentialRotationService().RotateAsync(db, new FakeSecretStore(), workspace.Id, new CredentialInput("github", "user", "new-token", "repo"));
         Assert.Equal(CredentialStatus.Active, credential.Status); Assert.Single(await db.Credentials.Where(x => x.WorkspaceId == workspace.Id && x.Profile == "github" && x.Status == CredentialStatus.Revoked).ToListAsync()); Assert.Single(await db.Credentials.Where(x => x.WorkspaceId == workspace.Id && x.Profile == "github" && x.Status == CredentialStatus.Active).ToListAsync());
     }
-    private sealed class FakeSecretStore : ISecretStore { public Task<string> StoreAsync(Guid w, string p, string t) => Task.FromResult($"secret/{w}/{p}"); }
+
+    private sealed class FakeSecretStore : ISecretStore
+    {
+        public Task<string> StoreAsync(Guid workspace, string profile, string token) =>
+            Task.FromResult($"secret/{workspace}/{profile}");
+    }
 }
