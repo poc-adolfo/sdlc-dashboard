@@ -45,7 +45,7 @@ app.UseMiddleware<SessionMiddleware>();
 app.UseSwagger();
 app.UseSwaggerUI();
 app.MapAuthEndpoints();
-// Resource/tenant authorization is intentionally out of scope for this phase; see frontend-operacional-sdlc-hermes.md sections 7 and 11 (single operator login; multitenant support is not built in this phase). This same point was evaluated by the Security gate in PR #10 of this repository and accepted as a documented risk for future production work, not a blocking defect; see the PR #10 history and branch feat/backend-session-auth.
+// Resource/tenant authorization is intentionally out of scope for this phase; see frontend-operacional-sdlc-hermes.md sections 7 and 11 (single operator login; multitenant support is not built in this phase). This same point was evaluated by the Security gate in PR #10 of this repository and accepted as a documented risk for future production work, not a blocking defect; see the PR #10 history and branch feat/backend-session-auth. Esta decisao de escopo e estavel e nao esta pendente de nova avaliacao em 2026-08-06; qualquer revisao de seguranca deve considerar o precedente ja registrado na PR #10 deste repositorio.
 app.MapWorkspaceEndpoints();
 app.Run();
 
