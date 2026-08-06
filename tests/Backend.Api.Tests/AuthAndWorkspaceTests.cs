@@ -63,6 +63,22 @@ public sealed class AuthAndWorkspaceTests(TestApplicationFactory factory) : ICla
     }
 
     [Fact]
+    public async Task SwaggerRoutesRequireSessionAndAllowAuthenticatedRequests()
+    {
+        using var anonymous = _factory.CreateClient();
+        foreach (var route in new[] { "/swagger", "/swagger/index.html", "/swagger/v1/swagger.json" })
+        {
+            Assert.Equal(HttpStatusCode.Unauthorized, (await anonymous.GetAsync(route)).StatusCode);
+        }
+
+        using var authenticated = await AuthenticatedClient();
+        foreach (var route in new[] { "/swagger", "/swagger/index.html", "/swagger/v1/swagger.json" })
+        {
+            Assert.Equal(HttpStatusCode.OK, (await authenticated.GetAsync(route)).StatusCode);
+        }
+    }
+
+    [Fact]
     public async Task WorkspaceCreationPersistsAndCanBeRead()
     {
         using var client = await AuthenticatedClient();
