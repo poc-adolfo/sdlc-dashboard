@@ -64,6 +64,25 @@ public sealed class WorkspaceApiTests : IClassFixture<WorkspaceApiFactory>
     }
 
     [Fact]
+    public async Task WorkspaceMutationsRequireValidSessionCookie()
+    {
+        using var http = factory.CreateClient();
+        http.DefaultRequestHeaders.Remove("Cookie");
+        var requests = new Func<Task<HttpResponseMessage>>[]
+        {
+            () => http.PostAsJsonAsync("/workspaces", new { name = "Unauthenticated", platform = "github", platform_ref = "unauthenticated" }),
+            () => http.PatchAsJsonAsync("/workspaces/1", new { name = "Unauthenticated" }),
+            () => http.PostAsync("/workspaces/1/archive", null)
+        };
+        foreach (var request in requests)
+            Assert.Equal(HttpStatusCode.Unauthorized, (await request()).StatusCode);
+
+        http.DefaultRequestHeaders.Add("Cookie", "sdlc_session=invalid-or-tampered");
+        foreach (var request in requests)
+            Assert.Equal(HttpStatusCode.Unauthorized, (await request()).StatusCode);
+    }
+
+    [Fact]
     public async Task CreateWithMissingClientReturns422()
     {
         using var http = factory.CreateClient();
