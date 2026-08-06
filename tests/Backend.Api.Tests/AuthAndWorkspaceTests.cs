@@ -66,6 +66,23 @@ public sealed class AuthAndWorkspaceTests : IClassFixture<TestApplicationFactory
     }
 
     [Fact]
+    public async Task MalformedLoginPayloadsAreRejectedWithoutServerError()
+    {
+        using var client = _factory.CreateClient();
+
+        using var nullUsername = new StringContent("{\"username\":null,\"password\":\"secret\"}", System.Text.Encoding.UTF8, "application/json");
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, (await client.PostAsync("/auth/login", nullUsername)).StatusCode);
+
+        using var missingUsername = new StringContent("{\"password\":\"secret\"}", System.Text.Encoding.UTF8, "application/json");
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, (await client.PostAsync("/auth/login", missingUsername)).StatusCode);
+
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, (await client.PostAsync("/auth/login", content: null)).StatusCode);
+
+        using var malformedJson = new StringContent("{not-json", System.Text.Encoding.UTF8, "application/json");
+        Assert.Equal(HttpStatusCode.BadRequest, (await client.PostAsync("/auth/login", malformedJson)).StatusCode);
+    }
+
+    [Fact]
     public async Task RepeatedInvalidLoginsAreTemporarilyBlockedAndDoNotLogUsername()
     {
         using var client = _factory.CreateClient();

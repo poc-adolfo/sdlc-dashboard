@@ -7,8 +7,16 @@ public static class AuthEndpoints
 {
     public static IEndpointRouteBuilder MapAuthEndpoints(this IEndpointRouteBuilder app)
     {
-        app.MapPost("/auth/login", (LoginRequest request, HttpContext http, SessionService sessions, LoginAttemptService attempts, IOptions<Backend.Api.Auth.SessionOptions> options, ILoggerFactory logs) =>
+        app.MapPost("/auth/login", (LoginRequest? request, HttpContext http, SessionService sessions, LoginAttemptService attempts, IOptions<Backend.Api.Auth.SessionOptions> options, ILoggerFactory logs) =>
         {
+            if (request is null || string.IsNullOrWhiteSpace(request.Username) || string.IsNullOrWhiteSpace(request.Password))
+            {
+                return Results.ValidationProblem(new Dictionary<string, string[]>
+                {
+                    ["request"] = new[] { "Username and Password are required." }
+                }, statusCode: StatusCodes.Status422UnprocessableEntity);
+            }
+
             var username = request.Username.Trim().ToUpperInvariant();
             var identity = $"ip:{http.Connection.RemoteIpAddress?.ToString() ?? "unknown"}|{username}";
             var accountIdentity = $"account:{username}";

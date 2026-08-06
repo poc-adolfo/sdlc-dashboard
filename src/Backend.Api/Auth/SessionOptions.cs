@@ -17,6 +17,9 @@ public sealed class SessionOptions
     public int MaxTrackedLoginIdentities { get; init; } = 10_000;
     public TimeSpan LoginAttemptEntryTtl { get; init; } = TimeSpan.FromMinutes(10);
 
+    // This validates the HMAC key's encoding and size only. It cannot prove randomness
+    // or entropy; production deployments must generate the value with a CSPRNG (for
+    // example, `openssl rand -base64 32`) and inject it through a secret manager.
     public static bool IsStrongSigningKey(string? value)
     {
         if (string.IsNullOrWhiteSpace(value) || value.Distinct().Count() < 8) return false;
