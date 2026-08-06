@@ -1,7 +1,12 @@
 using Backend.Api.Apis; using Backend.Api.Auth; using Backend.Persistence.Data; using Microsoft.EntityFrameworkCore; using OpenTelemetry.Metrics; using OpenTelemetry.Trace; using Serilog; using Swashbuckle.AspNetCore.SwaggerGen; using AuthOptions = Backend.Api.Auth.SessionOptions;
 var builder=WebApplication.CreateBuilder(args);
 builder.Host.UseSerilog((ctx,log)=>log.ReadFrom.Configuration(ctx.Configuration).WriteTo.Console());
-builder.Services.Configure<AuthOptions>(builder.Configuration.GetSection(AuthOptions.SectionName));
+builder.Services.AddOptions<AuthOptions>()
+    .Bind(builder.Configuration.GetSection(AuthOptions.SectionName))
+    .Validate(options => !string.IsNullOrWhiteSpace(options.Username), "Authentication:Username is required")
+    .Validate(options => !string.IsNullOrWhiteSpace(options.Password), "Authentication:Password is required")
+    .Validate(options => !string.IsNullOrWhiteSpace(options.SigningKey) && options.SigningKey.Length >= 32, "Authentication:SigningKey is required and must be at least 32 characters")
+    .ValidateOnStart();
 builder.Services.AddSingleton<SessionService>(); builder.Services.AddDbContext<AppDbContext>(o=>o.UseSqlite(builder.Configuration.GetConnectionString("Default")));
 builder.Services.AddOpenTelemetry().WithTracing(t=>t.AddAspNetCoreInstrumentation().AddConsoleExporter()).WithMetrics(m=>m.AddAspNetCoreInstrumentation().AddConsoleExporter());
 builder.Services.AddEndpointsApiExplorer(); builder.Services.AddSwaggerGen(c=>{ c.AddSecurityDefinition("sessionCookie",new Microsoft.OpenApi.Models.OpenApiSecurityScheme{Type=Microsoft.OpenApi.Models.SecuritySchemeType.ApiKey,In=Microsoft.OpenApi.Models.ParameterLocation.Cookie,Name="sdlc_session",Description="Signed session cookie. Obtain via POST /auth/login."}); c.OperationFilter<SessionSecurityOperationFilter>(); });
