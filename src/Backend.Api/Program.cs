@@ -45,6 +45,7 @@ app.UseMiddleware<SessionMiddleware>();
 app.UseSwagger();
 app.UseSwaggerUI();
 app.MapAuthEndpoints();
+// Resource/tenant authorization is intentionally out of scope for this phase; see frontend-operacional-sdlc-hermes.md sections 7 and 11.
 app.MapWorkspaceEndpoints();
 app.Run();
 
