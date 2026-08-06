@@ -9,6 +9,8 @@ namespace Backend.Api.Apis;
 
 public static class AssessmentEndpoints
 {
+    public const int MaxClientNameLength = 200;
+
     public const string DefaultContent = "## Linha de negocio do cliente\n\n\n## Stack utilizada\n\n\n## Arquiteturas presentes\n\n\n## Constraints de seguranca\n\n\n## Observacoes adicionais\n";
 
     public static IEndpointRouteBuilder MapAssessmentEndpoints(this IEndpointRouteBuilder endpoints)
@@ -34,10 +36,17 @@ public static class AssessmentEndpoints
         return Results.Ok(clients);
     }
 
-    private static async Task<IResult> Upsert(long id, AssessmentRequest? request, AppDbContext db, CancellationToken ct)
+    private static async Task<IResult> Upsert(long id, AssessmentRequest? request, AppDbContext db, IConfiguration configuration, CancellationToken ct)
     {
         if (request is null || request.ClientId is null && string.IsNullOrWhiteSpace(request.ClientName))
             return Results.UnprocessableEntity(new { errors = new[] { "client_id or client_name is required" } });
+        var maxContentLength = configuration.GetValue("Analista:MaxContentLength", 10000);
+        if (maxContentLength <= 0) maxContentLength = 10000;
+        var content = request.Content ?? DefaultContent;
+        if (content.Length > maxContentLength)
+            return Results.UnprocessableEntity(new { errors = new[] { $"content: maximum length is {maxContentLength} characters" } });
+        if (request.ClientName is not null && request.ClientName.Trim().Length > MaxClientNameLength)
+            return Results.UnprocessableEntity(new { errors = new[] { $"client_name: maximum length is {MaxClientNameLength} characters" } });
         var workspace = await db.Workspaces.SingleOrDefaultAsync(w => w.Id == id, ct);
         if (workspace is null) return Results.NotFound();
         Client? client = request.ClientId.HasValue ? await db.Clients.SingleOrDefaultAsync(c => c.Id == request.ClientId, ct) : null;
@@ -61,7 +70,7 @@ public static class AssessmentEndpoints
             assessment = await db.Assessments.SingleOrDefaultAsync(a => a.WorkspaceId == id && a.Status == AssessmentStatus.EmAndamento, ct);
         }
         var now = DateTime.UtcNow;
-        if (assessment is null) { assessment = new Assessment { WorkspaceId = id, Client = client, ClientId = client.Id, Content = request.Content ?? DefaultContent, CreatedAt = now, UpdatedAt = now }; db.Assessments.Add(assessment); }
+        if (assessment is null) { assessment = new Assessment { WorkspaceId = id, Client = client, ClientId = client.Id, Content = content, CreatedAt = now, UpdatedAt = now }; db.Assessments.Add(assessment); }
         else { assessment.Client = client; assessment.ClientId = client.Id; if (request.Content is not null) assessment.Content = request.Content; assessment.UpdatedAt = now; }
         await db.SaveChangesAsync(ct);
         return Results.Ok(AssessmentResponse.From(assessment));

@@ -34,3 +34,10 @@ env:
 ```
 
 The current scope intentionally remains one operator login: sections 7 and 11 of `frontend-operacional-sdlc-hermes.md` leave multitenant isolation and multi-user authorization out of this WBS; resource authorization is therefore not implemented in this correction.
+
+
+## Analista e limites de payload
+
+`Analista:ApiServerBaseUrl` e uma configuracao controlada exclusivamente pelo operador/deploy; nunca e recebida de input HTTP do cliente. Fora de `Development`/`Testing`, ela deve ser uma URL absoluta HTTPS e a inicializacao falha se nao for. O deploy tambem deve restringir o host e a rede de egress ao servico Analista aprovado.
+
+`Analista:MaxContentLength` limita o conteudo do assessment tanto no upsert quanto na conclusao. Nomes de cliente sao limitados a 200 caracteres.

@@ -11,6 +11,12 @@ using System.Net;
 using AuthOptions = Backend.Api.Auth.SessionOptions;
 
 var builder = WebApplication.CreateBuilder(args);
+var analistaBaseUrl = builder.Configuration["Analista:ApiServerBaseUrl"];
+if (!Uri.TryCreate(analistaBaseUrl, UriKind.Absolute, out var parsedAnalistaUrl) ||
+    parsedAnalistaUrl.Scheme != Uri.UriSchemeHttps &&
+    !builder.Environment.IsDevelopment() &&
+    !string.Equals(builder.Environment.EnvironmentName, "Testing", StringComparison.OrdinalIgnoreCase))
+    throw new InvalidOperationException("Analista:ApiServerBaseUrl must be an absolute HTTPS URL outside Development/Testing; this operator-controlled setting must not come from HTTP client input.");
 builder.Host.UseSerilog((ctx, log) => log.ReadFrom.Configuration(ctx.Configuration).WriteTo.Console());
 builder.Services.AddOptions<AuthOptions>()
     .Bind(builder.Configuration.GetSection(AuthOptions.SectionName))
@@ -22,6 +28,8 @@ builder.Services.AddOptions<AuthOptions>()
     .Validate(options => options.LoginLockoutDuration > TimeSpan.Zero, "Authentication:LoginLockoutDuration must be positive")
     .Validate(options => options.AccountLoginMaxFailures > 0, "Authentication:AccountLoginMaxFailures must be positive")
     .Validate(options => options.AccountLoginLockoutDuration > TimeSpan.Zero, "Authentication:AccountLoginLockoutDuration must be positive")
+    .Validate(options => options.MaxTrackedLoginIdentities > 0, "Authentication:MaxTrackedLoginIdentities must be positive")
+    .Validate(options => options.LoginAttemptEntryTtl > TimeSpan.Zero, "Authentication:LoginAttemptEntryTtl must be positive")
     .Validate(options => options.MaxTrackedLoginIdentities > 0, "Authentication:MaxTrackedLoginIdentities must be positive")
     .Validate(options => options.LoginAttemptEntryTtl > TimeSpan.Zero, "Authentication:LoginAttemptEntryTtl must be positive")
     .ValidateOnStart();
