@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Configuration;
 using Xunit;
 
 namespace Backend.Persistence.Tests;
@@ -149,7 +150,7 @@ public sealed class WorkspaceApiTests : IClassFixture<WorkspaceApiFactory>
         await using (var scope = factory.Services.CreateAsyncScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-            var workspace = new Workspace { Name = "Locked", Slug = "locked", Platform = WorkspacePlatform.Github, PlatformRef = "locked" };
+            var workspace = new Workspace { Name = "Locked-" + Guid.NewGuid().ToString("N"), Slug = "locked-unique", Platform = WorkspacePlatform.Github, PlatformRef = "locked" };
             db.Workspaces.Add(workspace);
             await db.SaveChangesAsync();
             db.PipelineInstances.Add(new PipelineInstance { WorkspaceId = workspace.Id, ExternalRef = "pipeline" });
@@ -175,7 +176,20 @@ public sealed class WorkspaceApiTests : IClassFixture<WorkspaceApiFactory>
 public sealed class WorkspaceApiFactory : WebApplicationFactory<Program>
 {
     private readonly string path = Path.Combine(Path.GetTempPath(), $"workspace-api-{Guid.NewGuid():N}.db");
-    protected override void ConfigureWebHost(IWebHostBuilder builder) => builder.UseSetting("DatabasePath", path);
+    protected override void ConfigureWebHost(IWebHostBuilder builder)
+    {
+        builder.UseSetting("ConnectionStrings:Default", "Data Source=" + path);
+        builder.ConfigureAppConfiguration((_, configuration) => configuration.AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["Authentication:Username"] = "operator", ["Authentication:Password"] = "secret",
+            ["Authentication:SigningKey"] = "DoBqIVy5zTyTGicih2WShaYg6goTsq0lvS7XlPiHWps=", ["Authentication:SecureCookie"] = "false"
+        }));
+    }
+    protected override void ConfigureClient(HttpClient client)
+    {
+        var sessions = Services.GetRequiredService<Backend.Api.Auth.SessionService>();
+        client.DefaultRequestHeaders.Add("Cookie", "sdlc_session=" + sessions.Create("operator", DateTimeOffset.UtcNow));
+    }
     protected override void Dispose(bool disposing) { base.Dispose(disposing); if (File.Exists(path)) File.Delete(path); }
 }
 
