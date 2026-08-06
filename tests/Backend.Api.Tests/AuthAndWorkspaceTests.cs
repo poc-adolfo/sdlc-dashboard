@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Json;
+using System.Security.Cryptography;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.Configuration;
@@ -12,6 +13,8 @@ namespace Backend.Api.Tests;
 public sealed class TestApplicationFactory : WebApplicationFactory<Program>
 {
     private readonly string _databasePath = Path.Combine(Path.GetTempPath(), $"auth-tests-{Guid.NewGuid():N}.db");
+    public string TestPassword { get; } = Guid.NewGuid().ToString("N");
+    public string TestSigningKey { get; } = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
@@ -19,8 +22,8 @@ public sealed class TestApplicationFactory : WebApplicationFactory<Program>
         builder.ConfigureAppConfiguration((_, configuration) => configuration.AddInMemoryCollection(new Dictionary<string, string?>
         {
             ["Authentication:Username"] = "operator",
-            ["Authentication:Password"] = "secret",
-            ["Authentication:SigningKey"] = "DoBqIVy5zTyTGicih2WShaYg6goTsq0lvS7XlPiHWps=",
+            ["Authentication:Password"] = TestPassword,
+            ["Authentication:SigningKey"] = TestSigningKey,
             ["Authentication:SecureCookie"] = "false",
             ["Authentication:ExpirationMinutes"] = "60",
             ["Authentication:LoginLockoutDuration"] = "00:15:00",
@@ -57,7 +60,7 @@ public sealed class AuthAndWorkspaceTests : IClassFixture<TestApplicationFactory
         using var client = _factory.CreateClient(new WebApplicationFactoryClientOptions { HandleCookies = true });
         Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync("/workspaces/1")).StatusCode);
 
-        var login = await client.PostAsJsonAsync("/auth/login", new { Username = "operator", Password = "secret" });
+        var login = await client.PostAsJsonAsync("/auth/login", new { Username = "operator", Password = _factory.TestPassword });
         Assert.Equal(HttpStatusCode.OK, login.StatusCode);
         Assert.Contains("sdlc_session", login.Headers.GetValues("Set-Cookie").Single());
 
@@ -70,10 +73,10 @@ public sealed class AuthAndWorkspaceTests : IClassFixture<TestApplicationFactory
     {
         using var client = _factory.CreateClient();
 
-        using var nullUsername = new StringContent("{\"username\":null,\"password\":\"secret\"}", System.Text.Encoding.UTF8, "application/json");
+        using var nullUsername = new StringContent("{\"username\":null,\"password\":\"invalid-test-password\"}", System.Text.Encoding.UTF8, "application/json");
         Assert.Equal(HttpStatusCode.UnprocessableEntity, (await client.PostAsync("/auth/login", nullUsername)).StatusCode);
 
-        using var missingUsername = new StringContent("{\"password\":\"secret\"}", System.Text.Encoding.UTF8, "application/json");
+        using var missingUsername = new StringContent("{\"password\":\"invalid-test-password\"}", System.Text.Encoding.UTF8, "application/json");
         Assert.Equal(HttpStatusCode.UnprocessableEntity, (await client.PostAsync("/auth/login", missingUsername)).StatusCode);
 
         Assert.Equal(HttpStatusCode.UnprocessableEntity, (await client.PostAsync("/auth/login", content: null)).StatusCode);
@@ -89,7 +92,7 @@ public sealed class AuthAndWorkspaceTests : IClassFixture<TestApplicationFactory
         for (var attempt = 1; attempt <= 5; attempt++)
             Assert.Equal(HttpStatusCode.Unauthorized, (await client.PostAsJsonAsync("/auth/login", new { Username = "operator", Password = "wrong" })).StatusCode);
 
-        var blocked = await client.PostAsJsonAsync("/auth/login", new { Username = "operator", Password = "secret" });
+        var blocked = await client.PostAsJsonAsync("/auth/login", new { Username = "operator", Password = _factory.TestPassword });
         Assert.Equal(HttpStatusCode.TooManyRequests, blocked.StatusCode);
         Assert.True(blocked.Headers.TryGetValues("Retry-After", out var retryAfter));
         Assert.Contains("300", retryAfter!);
@@ -108,7 +111,7 @@ public sealed class AuthAndWorkspaceTests : IClassFixture<TestApplicationFactory
             client.DefaultRequestHeaders.Add("X-Forwarded-For", $"198.51.100.{attempt}");
             Assert.Equal(HttpStatusCode.Unauthorized, (await client.PostAsJsonAsync("/auth/login", new { Username = "operator", Password = "wrong" })).StatusCode);
         }
-        var blocked = await second.PostAsJsonAsync("/auth/login", new { Username = "operator", Password = "secret" });
+        var blocked = await second.PostAsJsonAsync("/auth/login", new { Username = "operator", Password = _factory.TestPassword });
         Assert.Equal(HttpStatusCode.TooManyRequests, blocked.StatusCode);
         Assert.True(blocked.Headers.TryGetValues("Retry-After", out var retryAfter));
         Assert.Contains("300", retryAfter!);
@@ -120,8 +123,8 @@ public sealed class AuthAndWorkspaceTests : IClassFixture<TestApplicationFactory
         var options = Microsoft.Extensions.Options.Options.Create(new Backend.Api.Auth.SessionOptions
         {
             Username = "operator",
-            Password = "secret",
-            SigningKey = "DoBqIVy5zTyTGicih2WShaYg6goTsq0lvS7XlPiHWps=",
+            Password = _factory.TestPassword,
+            SigningKey = _factory.TestSigningKey,
             AccountLoginMaxFailures = 3,
             AccountLoginLockoutDuration = TimeSpan.FromMinutes(5),
             LoginAttemptEntryTtl = TimeSpan.FromMinutes(10)
@@ -142,7 +145,7 @@ public sealed class AuthAndWorkspaceTests : IClassFixture<TestApplicationFactory
     public void LoginAttemptTrackingIsBoundedAndExpiresEntries()
     {
         var options = Microsoft.Extensions.Options.Options.Create(new Backend.Api.Auth.SessionOptions
-        { Username = "operator", Password = "secret", SigningKey = "DoBqIVy5zTyTGicih2WShaYg6goTsq0lvS7XlPiHWps=", MaxTrackedLoginIdentities = 2, LoginAttemptEntryTtl = TimeSpan.FromSeconds(1) });
+        { Username = "operator", Password = _factory.TestPassword, SigningKey = _factory.TestSigningKey, MaxTrackedLoginIdentities = 2, LoginAttemptEntryTtl = TimeSpan.FromSeconds(1) });
         var service = new Backend.Api.Auth.LoginAttemptService(options);
         var now = DateTimeOffset.UtcNow;
         service.RecordFailure("one", now); service.RecordFailure("two", now); service.RecordFailure("three", now);
@@ -154,7 +157,7 @@ public sealed class AuthAndWorkspaceTests : IClassFixture<TestApplicationFactory
     [Fact]
     public void SigningKeyValidationAcceptsBase64Encoded32ByteKey()
     {
-        Assert.True(Backend.Api.Auth.SessionOptions.IsStrongSigningKey("DoBqIVy5zTyTGicih2WShaYg6goTsq0lvS7XlPiHWps="));
+        Assert.True(Backend.Api.Auth.SessionOptions.IsStrongSigningKey(_factory.TestSigningKey));
     }
 
     [Theory]
@@ -171,7 +174,7 @@ public sealed class AuthAndWorkspaceTests : IClassFixture<TestApplicationFactory
     {
         using var client = _factory.CreateClient(new WebApplicationFactoryClientOptions { HandleCookies = true });
         Assert.Equal(HttpStatusCode.Unauthorized, (await client.PostAsJsonAsync("/auth/login", new { Username = "operator", Password = "wrong" })).StatusCode);
-        Assert.Equal(HttpStatusCode.OK, (await client.PostAsJsonAsync("/auth/login", new { Username = "operator", Password = "secret" })).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await client.PostAsJsonAsync("/auth/login", new { Username = "operator", Password = _factory.TestPassword })).StatusCode);
         Assert.Equal(HttpStatusCode.UnprocessableEntity, (await client.PostAsJsonAsync("/workspaces", new { Name = "", Slug = "", PlatformRef = "" })).StatusCode);
     }
 
@@ -235,8 +238,8 @@ public sealed class AuthAndWorkspaceTests : IClassFixture<TestApplicationFactory
         Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync("/workspaces/1")).StatusCode);
 
         var service = new Backend.Api.Auth.SessionService(Microsoft.Extensions.Options.Options.Create(new Backend.Api.Auth.SessionOptions
-        { Username = "operator", Password = "secret", SigningKey = "DoBqIVy5zTyTGicih2WShaYg6goTsq0lvS7XlPiHWps=" }));
-        var validSignatureForEmptyUser = Convert.ToBase64String(System.Security.Cryptography.HMACSHA256.HashData(System.Text.Encoding.UTF8.GetBytes("test-signing-key-at-least-32-characters"), System.Text.Encoding.UTF8.GetBytes("|9999999999")));
+        { Username = "operator", Password = _factory.TestPassword, SigningKey = _factory.TestSigningKey }));
+        var validSignatureForEmptyUser = Convert.ToBase64String(System.Security.Cryptography.HMACSHA256.HashData(Convert.FromBase64String(_factory.TestSigningKey), System.Text.Encoding.UTF8.GetBytes("|9999999999")));
         Assert.False(service.Validate($"|9999999999|{validSignatureForEmptyUser}", DateTimeOffset.UtcNow, out _));
     }
 
@@ -244,7 +247,7 @@ public sealed class AuthAndWorkspaceTests : IClassFixture<TestApplicationFactory
     public void SessionExpiresAtBoundary()
     {
         var service = new Backend.Api.Auth.SessionService(Microsoft.Extensions.Options.Options.Create(new Backend.Api.Auth.SessionOptions
-        { Username = "operator", Password = "secret", SigningKey = "DoBqIVy5zTyTGicih2WShaYg6goTsq0lvS7XlPiHWps=", ExpirationMinutes = 1 }));
+        { Username = "operator", Password = _factory.TestPassword, SigningKey = _factory.TestSigningKey, ExpirationMinutes = 1 }));
         var now = DateTimeOffset.FromUnixTimeSeconds(1_700_000_000);
         var cookie = service.Create("operator", now.AddMinutes(-1));
         Assert.False(service.Validate(cookie, now, out _));
@@ -253,7 +256,7 @@ public sealed class AuthAndWorkspaceTests : IClassFixture<TestApplicationFactory
     private async Task<HttpClient> AuthenticatedClient()
     {
         var client = _factory.CreateClient(new WebApplicationFactoryClientOptions { HandleCookies = true });
-        var login = await client.PostAsJsonAsync("/auth/login", new { Username = "operator", Password = "secret" });
+        var login = await client.PostAsJsonAsync("/auth/login", new { Username = "operator", Password = _factory.TestPassword });
         login.EnsureSuccessStatusCode();
         return client;
     }

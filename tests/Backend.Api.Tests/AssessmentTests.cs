@@ -3,6 +3,7 @@ using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
+using System.Security.Cryptography;
 using Backend.Api.Auth;
 using Backend.Persistence.Data;
 using Backend.Persistence.Domain;
@@ -19,10 +20,12 @@ public sealed class AssessmentApiFactory : WebApplicationFactory<Program>
     private readonly string path = Path.Combine(Path.GetTempPath(), $"assessment-{Guid.NewGuid():N}.db");
     public FakeAnalistaHandler Handler { get; } = new();
     public string ApiKey { get; } = "test-token";
+    public string TestPassword { get; } = Guid.NewGuid().ToString("N");
+    public string TestSigningKey { get; } = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
     protected override void ConfigureWebHost(IWebHostBuilder builder) => builder
         .ConfigureAppConfiguration((_, c) => c.AddInMemoryCollection(new Dictionary<string,string?> {
-            ["Authentication:Username"]="operator", ["Authentication:Password"]="secret",
-            ["Authentication:SigningKey"]="DoBqIVy5zTyTGicih2WShaYg6goTsq0lvS7XlPiHWps=", ["Authentication:SecureCookie"]="false",
+            ["Authentication:Username"]="operator", ["Authentication:Password"] = TestPassword,
+            ["Authentication:SigningKey"] = TestSigningKey, ["Authentication:SecureCookie"]="false",
             ["ConnectionStrings:Default"]=$"Data Source={path}", ["Analista:ApiServerBaseUrl"]="http://analista.test",
             ["Analista:ApiServerApiKey"] = ApiKey, ["Analista:TimeoutSeconds"] = "1" }))
         .ConfigureServices(s => s.AddHttpClient("Analista").ConfigurePrimaryHttpMessageHandler(() => Handler));
@@ -56,6 +59,33 @@ public sealed class AssessmentTests
     [Fact] public async Task ConcludeFalseReturnsPendingAndPreservesState() { using var f=New(); f.Handler.Body="{\"dor_atendido\":false,\"pendencias\":[\"docs\"]}"; var (c,w,a)=await Seed(f,"False"); var r=await c.PostAsync($"/workspaces/{w}/assessments/{a}/concluir",null); Assert.Equal(HttpStatusCode.OK,r.StatusCode); Assert.Contains("docs",await r.Content.ReadAsStringAsync()); var ar=await c.GetFromJsonAsync<AssessmentResponse>($"/workspaces/{w}/assessments/{a}"); var wr=await c.GetFromJsonAsync<WorkspaceResponse>($"/workspaces/{w}"); Assert.Equal("em_andamento",ar!.Status); Assert.Null(wr!.ClientId); }
     [Fact] public async Task ConcludeFailurePreservesState() { using var f=New(); f.Handler.Fail=true; var (c,w,a)=await Seed(f,"Fail"); var r=await c.PostAsync($"/workspaces/{w}/assessments/{a}/concluir",null); Assert.Equal(HttpStatusCode.BadGateway,r.StatusCode); var ar=await c.GetFromJsonAsync<AssessmentResponse>($"/workspaces/{w}/assessments/{a}"); Assert.Equal("em_andamento",ar!.Status); Assert.Null((await c.GetFromJsonAsync<WorkspaceResponse>($"/workspaces/{w}"))!.ClientId); }
     [Fact] public async Task UpsertValidationAndUpdateAndSearch() { using var f=New(); var c=f.CreateClient(); Assert.Equal(HttpStatusCode.UnprocessableEntity,(await c.PostAsJsonAsync("/workspaces/99/assessments",(object?)null)).StatusCode); Assert.Equal(HttpStatusCode.UnprocessableEntity,(await c.PostAsJsonAsync("/workspaces/99/assessments",new{})).StatusCode); var (c2,w,a)=await Seed(f,"Zed"); Assert.Equal(HttpStatusCode.UnprocessableEntity,(await c2.PostAsJsonAsync($"/workspaces/{w}/assessments",new{client_id=999})).StatusCode); Assert.Equal(HttpStatusCode.UnprocessableEntity,(await c2.PostAsJsonAsync($"/workspaces/{w}/assessments",new{client_name="  "})).StatusCode); Assert.Equal(HttpStatusCode.NotFound,(await c2.PostAsJsonAsync("/workspaces/99999/assessments",new{client_name="New"})).StatusCode); var u=await c2.PostAsJsonAsync($"/workspaces/{w}/assessments",new{client_name="Zed",content="updated"}); Assert.Equal(a,(await u.Content.ReadFromJsonAsync<Assessment>())!.Id); var all=await c2.GetFromJsonAsync<ClientResponse[]>("/clients"); Assert.Equal(new[]{"Zed"},all!.Select(x=>x.Name)); await c2.PostAsync($"/workspaces/{w}/assessments/{a}/concluir",null); Assert.Equal("Bearer test-token",f.Handler.Authorization); }
+    [Fact]
+    public async Task AssessmentCannotBeReadUpdatedOrConcludedThroughAnotherWorkspace()
+    {
+        using var f = New(); var (c, workspaceA, assessmentId) = await Seed(f, "A");
+        var workspaceB = await (await c.PostAsJsonAsync("/workspaces", new { name = "B", platform = "github", platform_ref = Guid.NewGuid().ToString() })).Content.ReadFromJsonAsync<Workspace>();
+        Assert.NotNull(workspaceB);
+        Assert.Equal(HttpStatusCode.NotFound, (await c.GetAsync($"/workspaces/{workspaceB!.Id}/assessments/{assessmentId}")).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await c.PostAsJsonAsync($"/workspaces/{workspaceB.Id}/assessments", new { assessment_id = assessmentId, client_name = "B", content = "must not alter A" })).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await c.PostAsync($"/workspaces/{workspaceB.Id}/assessments/{assessmentId}/concluir", null)).StatusCode);
+        var original = await c.GetFromJsonAsync<AssessmentResponse>($"/workspaces/{workspaceA}/assessments/{assessmentId}");
+        Assert.Equal("x", original!.Content); Assert.Equal("em_andamento", original.Status);
+    }
+
+    [Fact]
+    public async Task OversizedAssessmentContentIsRejectedBeforeAnalistaCall()
+    {
+        using var f = New(); var c = f.CreateClient();
+        var w = await (await c.PostAsJsonAsync("/workspaces", new { name = "Large", platform = "github", platform_ref = Guid.NewGuid().ToString() })).Content.ReadFromJsonAsync<Workspace>();
+        var created = await c.PostAsJsonAsync($"/workspaces/{w!.Id}/assessments", new { client_name = "Large", content = new string('x', 10001) });
+        Assert.Equal(HttpStatusCode.OK, created.StatusCode);
+        var assessment = await created.Content.ReadFromJsonAsync<Assessment>();
+        var rejected = await c.PostAsync($"/workspaces/{w.Id}/assessments/{assessment!.Id}/concluir", null);
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, rejected.StatusCode);
+        Assert.Contains("maximum length", await rejected.Content.ReadAsStringAsync());
+        Assert.Null(f.Handler.Authorization);
+    }
+
     [Theory] [InlineData("{}")][InlineData("{\"dor_atendido\":true,\"pendencias\":\"bad\"}")][InlineData("{\"pendencias\":[]}")]
     public async Task InvalidGateResponsesAre502(string body) { using var f=New(); f.Handler.Body=body; var (c,w,a)=await Seed(f); Assert.Equal(HttpStatusCode.BadGateway,(await c.PostAsync($"/workspaces/{w}/assessments/{a}/concluir",null)).StatusCode); }
     [Fact] public async Task LastValidObjectWins() { using var f=New(); f.Handler.Body="{\"dor_atendido\":false,\"pendencias\":[\"old\"]} blah {\"dor_atendido\":true,\"pendencias\":[]}"; var (c,w,a)=await Seed(f); Assert.Contains("true",await (await c.PostAsync($"/workspaces/{w}/assessments/{a}/concluir",null)).Content.ReadAsStringAsync()); }
