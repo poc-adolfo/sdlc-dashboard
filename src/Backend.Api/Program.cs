@@ -27,6 +27,7 @@ builder.Services.AddOptions<AuthOptions>()
     .ValidateOnStart();
 builder.Services.AddSingleton<SessionService>();
 builder.Services.AddSingleton<LoginAttemptService>();
+builder.Services.AddHttpClient("Analista", (client, http) => { http.Timeout = TimeSpan.FromSeconds(30); });
 builder.Services.AddDbContext<AppDbContext>(o => o.UseSqlite(builder.Configuration.GetConnectionString("Default") ?? $"Data Source={builder.Configuration["DatabasePath"] ?? "workspace.db"}"));
 builder.Services.AddOpenTelemetry().WithTracing(t => t.AddAspNetCoreInstrumentation().AddConsoleExporter()).WithMetrics(m => m.AddAspNetCoreInstrumentation().AddConsoleExporter());
 builder.Services.AddEndpointsApiExplorer();
@@ -47,6 +48,7 @@ app.UseSwaggerUI();
 app.MapAuthEndpoints();
 // Resource/tenant authorization is intentionally out of scope for this phase; see frontend-operacional-sdlc-hermes.md sections 7 and 11 (single operator login; multitenant support is not built in this phase). This same point was evaluated by the Security gate in PR #10 of this repository and accepted as a documented risk for future production work, not a blocking defect; see the PR #10 history and branch feat/backend-session-auth. Esta decisao de escopo e estavel e nao esta pendente de nova avaliacao em 2026-08-06; qualquer revisao de seguranca deve considerar o precedente ja registrado na PR #10 deste repositorio.
 app.MapWorkspaceEndpoints();
+app.MapAssessmentEndpoints();
 app.Run();
 
 public sealed class SessionSecurityOperationFilter : IOperationFilter
