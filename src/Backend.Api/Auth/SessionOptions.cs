@@ -12,4 +12,21 @@ public sealed class SessionOptions
     public int LoginMaxFailures { get; init; } = 5;
     public TimeSpan LoginFailureWindow { get; init; } = TimeSpan.FromMinutes(5);
     public TimeSpan LoginLockoutDuration { get; init; } = TimeSpan.FromMinutes(15);
+    public int AccountLoginMaxFailures { get; init; } = 5;
+    public TimeSpan AccountLoginLockoutDuration { get; init; } = TimeSpan.FromMinutes(15);
+    public int MaxTrackedLoginIdentities { get; init; } = 10_000;
+    public TimeSpan LoginAttemptEntryTtl { get; init; } = TimeSpan.FromMinutes(10);
+
+    public static bool IsStrongSigningKey(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value) || value.Distinct().Count() < 8) return false;
+        byte[] bytes;
+        try { bytes = Convert.FromBase64String(value); }
+        catch (FormatException) { return false; }
+        if (bytes.Length != 32) return false;
+        if (bytes.All(b => b == bytes[0])) return false;
+        var ascending = bytes.Zip(bytes.Skip(1), (a, b) => b == a + 1).All(x => x);
+        var descending = bytes.Zip(bytes.Skip(1), (a, b) => b + 1 == a).All(x => x);
+        return !ascending && !descending;
+    }
 }

@@ -5,10 +5,14 @@ builder.Services.AddOptions<AuthOptions>()
     .Bind(builder.Configuration.GetSection(AuthOptions.SectionName))
     .Validate(options => !string.IsNullOrWhiteSpace(options.Username), "Authentication:Username is required")
     .Validate(options => !string.IsNullOrWhiteSpace(options.Password), "Authentication:Password is required")
-    .Validate(options => !string.IsNullOrWhiteSpace(options.SigningKey) && options.SigningKey.Length >= 32, "Authentication:SigningKey is required and must be at least 32 characters")
+    .Validate(options => AuthOptions.IsStrongSigningKey(options.SigningKey), "Authentication:SigningKey must be a strong base64-encoded 32-byte (256-bit) random key")
     .Validate(options => options.LoginMaxFailures > 0, "Authentication:LoginMaxFailures must be positive")
     .Validate(options => options.LoginFailureWindow > TimeSpan.Zero, "Authentication:LoginFailureWindow must be positive")
     .Validate(options => options.LoginLockoutDuration > TimeSpan.Zero, "Authentication:LoginLockoutDuration must be positive")
+    .Validate(options => options.AccountLoginMaxFailures > 0, "Authentication:AccountLoginMaxFailures must be positive")
+    .Validate(options => options.AccountLoginLockoutDuration > TimeSpan.Zero, "Authentication:AccountLoginLockoutDuration must be positive")
+    .Validate(options => options.MaxTrackedLoginIdentities > 0, "Authentication:MaxTrackedLoginIdentities must be positive")
+    .Validate(options => options.LoginAttemptEntryTtl > TimeSpan.Zero, "Authentication:LoginAttemptEntryTtl must be positive")
     .ValidateOnStart();
 builder.Services.AddSingleton<SessionService>(); builder.Services.AddSingleton<LoginAttemptService>(); builder.Services.AddDbContext<AppDbContext>(o=>o.UseSqlite(builder.Configuration.GetConnectionString("Default")));
 builder.Services.AddOpenTelemetry().WithTracing(t=>t.AddAspNetCoreInstrumentation().AddConsoleExporter()).WithMetrics(m=>m.AddAspNetCoreInstrumentation().AddConsoleExporter());

@@ -7,7 +7,7 @@ Stack: React (mobile-first) + .NET 8.
 
 ## Production authentication secrets
 
-The API has no weak defaults: `Authentication:Username`, `Authentication:Password`, and `Authentication:SigningKey` are required at startup, and the signing key must contain at least 32 characters. In Kubernetes, inject these values from a namespace-scoped Secret using the standard .NET environment-variable mapping (`Authentication__Username`, `Authentication__Password`, and `Authentication__SigningKey`). Do not put values in a Deployment or ConfigMap.
+The API has no weak defaults: `Authentication:Username`, `Authentication:Password`, and `Authentication:SigningKey` are required at startup, and the signing key must be a randomly generated, base64-encoded 32-byte (256-bit) key. Generate one with `openssl rand -base64 32`. In Kubernetes, inject these values from a namespace-scoped Secret using the standard .NET environment-variable mapping (`Authentication__Username`, `Authentication__Password`, and `Authentication__SigningKey`). Do not put values in a Deployment or ConfigMap.
 
 Example (replace the placeholders through your secret-management pipeline; do not commit real values):
 
@@ -21,7 +21,7 @@ type: Opaque
 stringData:
   username: <operator-username>
   password: <generated-password>
-  signingKey: <random-value-at-least-32-characters>
+  signingKey: <output-of-openssl-rand--base64-32>
 ---
 # Add to the API Deployment container:
 env:

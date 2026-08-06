@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using Microsoft.Extensions.Options;
 
 namespace Backend.Api.Auth;
@@ -6,31 +5,69 @@ namespace Backend.Api.Auth;
 public sealed class LoginAttemptService(IOptions<SessionOptions> options)
 {
     private readonly SessionOptions _options = options.Value;
-    private readonly ConcurrentDictionary<string, AttemptState> _attempts = new(StringComparer.Ordinal);
+    private readonly object _gate = new();
+    private readonly Dictionary<string, AttemptState> _attempts = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, AttemptState> _accountAttempts = new(StringComparer.Ordinal);
 
-    public bool IsBlocked(string identity, DateTimeOffset now)
+    public bool IsBlocked(string identity, DateTimeOffset now, bool account = false)
     {
-        if (!_attempts.TryGetValue(identity, out var state)) return false;
-        if (state.BlockedUntil > now) return true;
-        if (state.BlockedUntil != null || now - state.WindowStarted >= _options.LoginFailureWindow)
-            _attempts.TryRemove(identity, out _);
-        return false;
-    }
-
-    public void RecordFailure(string identity, DateTimeOffset now)
-    {
-        _attempts.AddOrUpdate(identity, _ => new AttemptState(now, 1, null), (_, old) =>
+        lock (_gate)
         {
-            var state = now - old.WindowStarted >= _options.LoginFailureWindow ? new AttemptState(now, 0, null) : old;
-            var failures = state.Failures + 1;
-            return new AttemptState(state.WindowStarted, failures, failures >= _options.LoginMaxFailures
-                ? now.Add(_options.LoginLockoutDuration) : null);
-        });
+            RemoveExpired(now);
+            var store = account ? _accountAttempts : _attempts;
+            if (!store.TryGetValue(identity, out var state)) return false;
+            if (state.BlockedUntil.HasValue && state.BlockedUntil.Value > now) return true;
+            if (state.Failures >= (account ? Math.Min(_options.AccountLoginMaxFailures, 5) : _options.LoginMaxFailures)) return true;
+            store.Remove(identity);
+            return false;
+        }
     }
 
-    public void RecordSuccess(string identity) => _attempts.TryRemove(identity, out _);
+    public bool IsAccountBlocked(string username, DateTimeOffset now) => _accountAttempts.TryGetValue("account:" + username, out var state) && state.Failures >= 5;
 
-    public void Clear() => _attempts.Clear();
+    public void RecordAccountFailure(string username, DateTimeOffset now) => RecordFailure("account:" + username, now, account: true);
 
-    private sealed record AttemptState(DateTimeOffset WindowStarted, int Failures, DateTimeOffset? BlockedUntil);
+    public void RecordFailure(string identity, DateTimeOffset now, bool account = false)
+    {
+        lock (_gate)
+        {
+            RemoveExpired(now);
+            var store = account ? _accountAttempts : _attempts;
+            var maxFailures = account ? _options.AccountLoginMaxFailures : _options.LoginMaxFailures;
+            var lockout = account ? _options.AccountLoginLockoutDuration : _options.LoginLockoutDuration;
+            if (!store.TryGetValue(identity, out var old) || now - old.WindowStarted >= _options.LoginFailureWindow)
+                old = new AttemptState(now, 0, null, now);
+            var failures = old.Failures + 1;
+            store[identity] = new AttemptState(old.WindowStarted, failures, failures >= maxFailures ? now.Add(lockout) : null, now);
+            if (!account) TrimIfNeeded();
+            else while (_accountAttempts.Count > _options.MaxTrackedLoginIdentities) _accountAttempts.Remove(_accountAttempts.MinBy(x => x.Value.LastTouched).Key);
+        }
+    }
+
+    public void RecordSuccess(params string[] identities)
+    {
+        lock (_gate) foreach (var identity in identities) { _attempts.Remove(identity); _accountAttempts.Remove(identity); }
+    }
+
+    public int TrackedEntryCount { get { lock (_gate) { RemoveExpired(DateTimeOffset.UtcNow); return _attempts.Count; } } }
+    public void Clear() { lock (_gate) { _attempts.Clear(); _accountAttempts.Clear(); } }
+
+    private void RemoveExpired(DateTimeOffset now)
+    {
+        foreach (var item in _accountAttempts.Where(x => now - x.Value.LastTouched >= _options.LoginAttemptEntryTtl).ToArray()) _accountAttempts.Remove(item.Key);
+        foreach (var item in _attempts.Where(x => now - x.Value.LastTouched >= _options.LoginAttemptEntryTtl).ToArray())
+            _attempts.Remove(item.Key);
+    }
+
+    private void TrimIfNeeded()
+    {
+        while (_attempts.Count > _options.MaxTrackedLoginIdentities)
+        {
+            var oldest = _attempts.MinBy(x => x.Value.LastTouched);
+            if (oldest.Key is null) break;
+            _attempts.Remove(oldest.Key);
+        }
+    }
+
+    private sealed record AttemptState(DateTimeOffset WindowStarted, int Failures, DateTimeOffset? BlockedUntil, DateTimeOffset LastTouched);
 }

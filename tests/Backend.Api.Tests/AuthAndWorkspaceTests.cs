@@ -20,7 +20,7 @@ public sealed class TestApplicationFactory : WebApplicationFactory<Program>
         {
             ["Authentication:Username"] = "operator",
             ["Authentication:Password"] = "secret",
-            ["Authentication:SigningKey"] = "test-signing-key-at-least-32-characters",
+            ["Authentication:SigningKey"] = "DoBqIVy5zTyTGicih2WShaYg6goTsq0lvS7XlPiHWps=",
             ["Authentication:SecureCookie"] = "false",
             ["Authentication:ExpirationMinutes"] = "60",
             ["ConnectionStrings:Default"] = $"Data Source={_databasePath}"
@@ -74,6 +74,44 @@ public sealed class AuthAndWorkspaceTests : IClassFixture<TestApplicationFactory
         Assert.Equal(HttpStatusCode.TooManyRequests, blocked.StatusCode);
         Assert.True(blocked.Headers.TryGetValues("Retry-After", out var retryAfter));
         Assert.Contains("900", retryAfter!);
+    }
+
+
+    [Fact]
+    public async Task AccountLockoutAppliesAcrossDifferentClientIps()
+    {
+        using var first = _factory.CreateClient();
+        using var second = _factory.CreateClient();
+        for (var attempt = 1; attempt <= 5; attempt++)
+        {
+            var client = attempt % 2 == 0 ? second : first;
+            client.DefaultRequestHeaders.Remove("X-Forwarded-For");
+            client.DefaultRequestHeaders.Add("X-Forwarded-For", $"198.51.100.{attempt}");
+            Assert.Equal(HttpStatusCode.Unauthorized, (await client.PostAsJsonAsync("/auth/login", new { Username = "operator", Password = "wrong" })).StatusCode);
+        }
+        Assert.Equal(HttpStatusCode.TooManyRequests, (await second.PostAsJsonAsync("/auth/login", new { Username = "operator", Password = "secret" })).StatusCode);
+    }
+
+    [Fact]
+    public void LoginAttemptTrackingIsBoundedAndExpiresEntries()
+    {
+        var options = Microsoft.Extensions.Options.Options.Create(new Backend.Api.Auth.SessionOptions
+        { Username = "operator", Password = "secret", SigningKey = "DoBqIVy5zTyTGicih2WShaYg6goTsq0lvS7XlPiHWps=", MaxTrackedLoginIdentities = 2, LoginAttemptEntryTtl = TimeSpan.FromSeconds(1) });
+        var service = new Backend.Api.Auth.LoginAttemptService(options);
+        var now = DateTimeOffset.UtcNow;
+        service.RecordFailure("one", now); service.RecordFailure("two", now); service.RecordFailure("three", now);
+        Assert.True(service.TrackedEntryCount <= 2);
+        service.RecordFailure("fresh", now.AddSeconds(2));
+        Assert.True(service.TrackedEntryCount <= 1);
+    }
+
+    [Theory]
+    [InlineData("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa=")]
+    [InlineData("AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=")]
+    public void SigningKeyValidationRejectsWeakKeys(string key)
+    {
+        var isStrong = Backend.Api.Auth.SessionOptions.IsStrongSigningKey(key);
+        Assert.Equal(key == "DoBqIVy5zTyTGicih2WShaYg6goTsq0lvS7XlPiHWps=", isStrong);
     }
 
     [Fact]
@@ -145,7 +183,7 @@ public sealed class AuthAndWorkspaceTests : IClassFixture<TestApplicationFactory
         Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync("/workspaces/1")).StatusCode);
 
         var service = new Backend.Api.Auth.SessionService(Microsoft.Extensions.Options.Options.Create(new Backend.Api.Auth.SessionOptions
-        { Username = "operator", Password = "secret", SigningKey = "test-signing-key-at-least-32-characters" }));
+        { Username = "operator", Password = "secret", SigningKey = "DoBqIVy5zTyTGicih2WShaYg6goTsq0lvS7XlPiHWps=" }));
         var validSignatureForEmptyUser = Convert.ToBase64String(System.Security.Cryptography.HMACSHA256.HashData(System.Text.Encoding.UTF8.GetBytes("test-signing-key-at-least-32-characters"), System.Text.Encoding.UTF8.GetBytes("|9999999999")));
         Assert.False(service.Validate($"|9999999999|{validSignatureForEmptyUser}", DateTimeOffset.UtcNow, out _));
     }
@@ -154,7 +192,7 @@ public sealed class AuthAndWorkspaceTests : IClassFixture<TestApplicationFactory
     public void SessionExpiresAtBoundary()
     {
         var service = new Backend.Api.Auth.SessionService(Microsoft.Extensions.Options.Options.Create(new Backend.Api.Auth.SessionOptions
-        { Username = "operator", Password = "secret", SigningKey = "test-signing-key-at-least-32-characters", ExpirationMinutes = 1 }));
+        { Username = "operator", Password = "secret", SigningKey = "DoBqIVy5zTyTGicih2WShaYg6goTsq0lvS7XlPiHWps=", ExpirationMinutes = 1 }));
         var now = DateTimeOffset.FromUnixTimeSeconds(1_700_000_000);
         var cookie = service.Create("operator", now.AddMinutes(-1));
         Assert.False(service.Validate(cookie, now, out _));
