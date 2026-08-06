@@ -61,7 +61,7 @@ public sealed class AuthAndWorkspaceTests : IClassFixture<TestApplicationFactory
         Assert.Equal(HttpStatusCode.OK, login.StatusCode);
         Assert.Contains("sdlc_session", login.Headers.GetValues("Set-Cookie").Single());
 
-        var create = await client.PostAsJsonAsync("/workspaces", new { Name = "Protected", Slug = $"protected-{Guid.NewGuid():N}", PlatformRef = "org/repo" });
+        var create = await client.PostAsJsonAsync("/workspaces", new { Name = "Protected", Platform = "github", platform_ref = "org/repo" });
         Assert.Equal(HttpStatusCode.Created, create.StatusCode);
     }
 
@@ -196,12 +196,12 @@ public sealed class AuthAndWorkspaceTests : IClassFixture<TestApplicationFactory
     {
         using var client = await AuthenticatedClient();
         var slug = $"workspace-{Guid.NewGuid():N}";
-        var response = await client.PostAsJsonAsync("/workspaces", new { Name = "Acme", Slug = slug, PlatformRef = "acme/platform" });
+        var response = await client.PostAsJsonAsync("/workspaces", new { name = "Acme", platform = "github", platform_ref = "acme/platform" });
         Assert.Equal(HttpStatusCode.Created, response.StatusCode);
         var workspace = await response.Content.ReadFromJsonAsync<WorkspaceResponse>();
         Assert.NotNull(workspace);
         Assert.Equal("Acme", workspace!.Name);
-        Assert.Equal(slug, workspace.Slug);
+        Assert.Equal("acme", workspace.Slug);
         Assert.Equal(response.Headers.Location?.ToString(), $"/workspaces/{workspace.Id}");
 
         var get = await client.GetFromJsonAsync<WorkspaceResponse>($"/workspaces/{workspace.Id}");
