@@ -13,9 +13,14 @@ public static class AuthEndpoints
             var identity = $"ip:{http.Connection.RemoteIpAddress?.ToString() ?? "unknown"}|{username}";
             var accountIdentity = $"account:{username}";
             var now = DateTimeOffset.UtcNow;
-            if (attempts.IsBlocked(identity, now) || attempts.IsAccountBlocked(username, now))
+            var isIpBlocked = attempts.IsBlocked(identity, now);
+            var isAccountBlocked = attempts.IsAccountBlocked(username, now);
+            if (isIpBlocked || isAccountBlocked)
             {
-                http.Response.Headers.RetryAfter = ((int)Math.Ceiling(options.Value.LoginLockoutDuration.TotalSeconds)).ToString();
+                var lockoutDuration = isAccountBlocked
+                    ? options.Value.AccountLoginLockoutDuration
+                    : options.Value.LoginLockoutDuration;
+                http.Response.Headers.RetryAfter = ((int)Math.Ceiling(lockoutDuration.TotalSeconds)).ToString();
                 logs.CreateLogger("Auth").LogWarning("Login rejected because the client is temporarily locked out from repeated failures; IP={RemoteIp}", http.Connection.RemoteIpAddress);
                 return Results.StatusCode(StatusCodes.Status429TooManyRequests);
             }

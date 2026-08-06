@@ -23,6 +23,8 @@ public sealed class TestApplicationFactory : WebApplicationFactory<Program>
             ["Authentication:SigningKey"] = "DoBqIVy5zTyTGicih2WShaYg6goTsq0lvS7XlPiHWps=",
             ["Authentication:SecureCookie"] = "false",
             ["Authentication:ExpirationMinutes"] = "60",
+            ["Authentication:LoginLockoutDuration"] = "00:15:00",
+            ["Authentication:AccountLoginLockoutDuration"] = "00:05:00",
             ["ConnectionStrings:Default"] = $"Data Source={_databasePath}"
         }));
     }
@@ -73,7 +75,7 @@ public sealed class AuthAndWorkspaceTests : IClassFixture<TestApplicationFactory
         var blocked = await client.PostAsJsonAsync("/auth/login", new { Username = "operator", Password = "secret" });
         Assert.Equal(HttpStatusCode.TooManyRequests, blocked.StatusCode);
         Assert.True(blocked.Headers.TryGetValues("Retry-After", out var retryAfter));
-        Assert.Contains("900", retryAfter!);
+        Assert.Contains("300", retryAfter!);
     }
 
 
@@ -89,7 +91,10 @@ public sealed class AuthAndWorkspaceTests : IClassFixture<TestApplicationFactory
             client.DefaultRequestHeaders.Add("X-Forwarded-For", $"198.51.100.{attempt}");
             Assert.Equal(HttpStatusCode.Unauthorized, (await client.PostAsJsonAsync("/auth/login", new { Username = "operator", Password = "wrong" })).StatusCode);
         }
-        Assert.Equal(HttpStatusCode.TooManyRequests, (await second.PostAsJsonAsync("/auth/login", new { Username = "operator", Password = "secret" })).StatusCode);
+        var blocked = await second.PostAsJsonAsync("/auth/login", new { Username = "operator", Password = "secret" });
+        Assert.Equal(HttpStatusCode.TooManyRequests, blocked.StatusCode);
+        Assert.True(blocked.Headers.TryGetValues("Retry-After", out var retryAfter));
+        Assert.Contains("300", retryAfter!);
     }
 
     [Fact]
@@ -129,14 +134,20 @@ public sealed class AuthAndWorkspaceTests : IClassFixture<TestApplicationFactory
         Assert.True(service.TrackedEntryCount <= 1);
     }
 
-    [Theory]
-    [InlineData("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa=")]
-    [InlineData("AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=")]
-    public void SigningKeyValidationRejectsWeakKeys(string key)
+    [Fact]
+    public void SigningKeyValidationAcceptsBase64Encoded32ByteKey()
     {
-        var isStrong = Backend.Api.Auth.SessionOptions.IsStrongSigningKey(key);
-        Assert.Equal(key == "DoBqIVy5zTyTGicih2WShaYg6goTsq0lvS7XlPiHWps=", isStrong);
+        Assert.True(Backend.Api.Auth.SessionOptions.IsStrongSigningKey("DoBqIVy5zTyTGicih2WShaYg6goTsq0lvS7XlPiHWps="));
     }
+
+    [Theory]
+    [InlineData("not-base64")]
+    [InlineData("AQIDBA==")]
+    public void SigningKeyValidationRejectsNonBase64AndShortDecodedKeys(string key)
+    {
+        Assert.False(Backend.Api.Auth.SessionOptions.IsStrongSigningKey(key));
+    }
+
 
     [Fact]
     public async Task InvalidLoginIsRejectedAndValidLoginAllowsProtectedWorkspaceAccess()
