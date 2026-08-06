@@ -27,7 +27,7 @@ builder.Services.AddOptions<AuthOptions>()
     .ValidateOnStart();
 builder.Services.AddSingleton<SessionService>();
 builder.Services.AddSingleton<LoginAttemptService>();
-builder.Services.AddHttpClient("Analista", (client, http) => { http.Timeout = TimeSpan.FromSeconds(30); });
+builder.Services.AddHttpClient("Analista", (client, http) => { http.Timeout = TimeSpan.FromSeconds(builder.Configuration.GetValue("Analista:TimeoutSeconds", 30)); });
 builder.Services.AddDbContext<AppDbContext>(o => o.UseSqlite(builder.Configuration.GetConnectionString("Default") ?? $"Data Source={builder.Configuration["DatabasePath"] ?? "workspace.db"}"));
 builder.Services.AddOpenTelemetry().WithTracing(t => t.AddAspNetCoreInstrumentation().AddConsoleExporter()).WithMetrics(m => m.AddAspNetCoreInstrumentation().AddConsoleExporter());
 builder.Services.AddEndpointsApiExplorer();

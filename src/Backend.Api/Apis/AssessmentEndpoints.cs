@@ -14,9 +14,16 @@ public static class AssessmentEndpoints
     public static IEndpointRouteBuilder MapAssessmentEndpoints(this IEndpointRouteBuilder endpoints)
     {
         endpoints.MapGet("/clients", SearchClients);
+        endpoints.MapGet("/workspaces/{id:long}/assessments/{aid:long}", Get);
         endpoints.MapPost("/workspaces/{id:long}/assessments", Upsert);
         endpoints.MapPost("/workspaces/{id:long}/assessments/{aid:long}/concluir", Conclude);
         return endpoints;
+    }
+
+    private static async Task<IResult> Get(long id, long aid, AppDbContext db, CancellationToken ct)
+    {
+        var assessment = await db.Assessments.AsNoTracking().SingleOrDefaultAsync(a => a.Id == aid && a.WorkspaceId == id, ct);
+        return assessment is null ? Results.NotFound() : Results.Ok(AssessmentResponse.From(assessment));
     }
 
     private static async Task<IResult> SearchClients(string? q, AppDbContext db, CancellationToken ct)
@@ -27,7 +34,7 @@ public static class AssessmentEndpoints
         return Results.Ok(clients);
     }
 
-    private static async Task<IResult> Upsert(long id, AssessmentRequest request, AppDbContext db, CancellationToken ct)
+    private static async Task<IResult> Upsert(long id, AssessmentRequest? request, AppDbContext db, CancellationToken ct)
     {
         if (request is null || request.ClientId is null && string.IsNullOrWhiteSpace(request.ClientName))
             return Results.UnprocessableEntity(new { errors = new[] { "client_id or client_name is required" } });
@@ -55,7 +62,11 @@ public static class AssessmentEndpoints
         var assessment = await db.Assessments.SingleOrDefaultAsync(a => a.Id == aid && a.WorkspaceId == id, ct);
         if (assessment is null) return Results.NotFound();
         var baseUrl = configuration["Analista:ApiServerBaseUrl"];
-        if (string.IsNullOrWhiteSpace(baseUrl)) return Results.StatusCode(StatusCodes.Status502BadGateway);
+        if (string.IsNullOrWhiteSpace(baseUrl))
+        {
+            loggerFactory.CreateLogger("AssessmentEndpoints").LogError("Analista:ApiServerBaseUrl is not configured");
+            return Results.Problem("Analista:ApiServerBaseUrl is not configured", statusCode: StatusCodes.Status502BadGateway);
+        }
         using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(new Uri(baseUrl.TrimEnd('/') + "/"), "v1/chat/completions"));
         request.Content = JsonContent.Create(new { model = "analista", messages = new[] { new { role = "user", content = assessment.Content } } });
         var apiKey = configuration["Analista:ApiServerApiKey"];
@@ -88,7 +99,25 @@ public static class AssessmentEndpoints
         {
             var start = text.LastIndexOf('{', end - 1);
             if (start < 0) break;
-            try { using var json = JsonDocument.Parse(text[start..end]); var root = json.RootElement; if (root.TryGetProperty("dor_atendido", out var attended) && (attended.ValueKind == JsonValueKind.True || attended.ValueKind == JsonValueKind.False)) { var pending = root.TryGetProperty("pendencias", out var p) ? p.EnumerateArray().Select(x => x.ToString()).ToList() : new List<string>(); return (attended.GetBoolean(), pending); } } catch (JsonException) { }
+            try
+            {
+                using var json = JsonDocument.Parse(text[start..end]);
+                var root = json.RootElement;
+                if (!root.TryGetProperty("dor_atendido", out var attended) ||
+                    (attended.ValueKind != JsonValueKind.True && attended.ValueKind != JsonValueKind.False) ||
+                    !root.TryGetProperty("pendencias", out var pending) ||
+                    pending.ValueKind != JsonValueKind.Array)
+                    continue;
+                var values = new List<string>();
+                foreach (var item in pending.EnumerateArray())
+                {
+                    if (item.ValueKind != JsonValueKind.String) return null;
+                    values.Add(item.GetString()!);
+                }
+                return (attended.GetBoolean(), values);
+            }
+            catch (JsonException) { }
+            catch (InvalidOperationException) { return null; }
         }
         return null;
     }
