@@ -93,6 +93,30 @@ public sealed class AuthAndWorkspaceTests : IClassFixture<TestApplicationFactory
     }
 
     [Fact]
+    public void AccountLockoutUsesConfiguredFailureLimitAndExpires()
+    {
+        var options = Microsoft.Extensions.Options.Options.Create(new Backend.Api.Auth.SessionOptions
+        {
+            Username = "operator",
+            Password = "secret",
+            SigningKey = "DoBqIVy5zTyTGicih2WShaYg6goTsq0lvS7XlPiHWps=",
+            AccountLoginMaxFailures = 3,
+            AccountLoginLockoutDuration = TimeSpan.FromMinutes(5),
+            LoginAttemptEntryTtl = TimeSpan.FromMinutes(10)
+        });
+        var service = new Backend.Api.Auth.LoginAttemptService(options);
+        var now = DateTimeOffset.UtcNow;
+
+        service.RecordAccountFailure("operator", now);
+        service.RecordAccountFailure("operator", now.AddSeconds(1));
+        Assert.False(service.IsAccountBlocked("operator", now.AddSeconds(1)));
+
+        service.RecordAccountFailure("operator", now.AddSeconds(2));
+        Assert.True(service.IsAccountBlocked("operator", now.AddSeconds(2)));
+        Assert.False(service.IsAccountBlocked("operator", now.AddMinutes(6)));
+    }
+
+    [Fact]
     public void LoginAttemptTrackingIsBoundedAndExpiresEntries()
     {
         var options = Microsoft.Extensions.Options.Options.Create(new Backend.Api.Auth.SessionOptions

@@ -16,14 +16,18 @@ public sealed class LoginAttemptService(IOptions<SessionOptions> options)
             RemoveExpired(now);
             var store = account ? _accountAttempts : _attempts;
             if (!store.TryGetValue(identity, out var state)) return false;
-            if (state.BlockedUntil.HasValue && state.BlockedUntil.Value > now) return true;
-            if (state.Failures >= (account ? Math.Min(_options.AccountLoginMaxFailures, 5) : _options.LoginMaxFailures)) return true;
-            store.Remove(identity);
-            return false;
+            if (state.BlockedUntil.HasValue)
+            {
+                if (state.BlockedUntil.Value > now) return true;
+                store.Remove(identity);
+                return false;
+            }
+
+            return state.Failures >= (account ? _options.AccountLoginMaxFailures : _options.LoginMaxFailures);
         }
     }
 
-    public bool IsAccountBlocked(string username, DateTimeOffset now) => _accountAttempts.TryGetValue("account:" + username, out var state) && state.Failures >= 5;
+    public bool IsAccountBlocked(string username, DateTimeOffset now) => IsBlocked("account:" + username, now, account: true);
 
     public void RecordAccountFailure(string username, DateTimeOffset now) => RecordFailure("account:" + username, now, account: true);
 
