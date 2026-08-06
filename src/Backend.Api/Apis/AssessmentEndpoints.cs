@@ -83,7 +83,7 @@ public static class AssessmentEndpoints
             return Results.Problem("Analista:ApiServerBaseUrl is not configured", statusCode: StatusCodes.Status502BadGateway);
         }
         using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(new Uri(baseUrl.TrimEnd('/') + "/"), "v1/chat/completions"));
-        request.Content = JsonContent.Create(new { model = "analista", messages = new[] { new { role = "user", content = assessment.Content } });
+        request.Content = JsonContent.Create(new { model = "analista", messages = new[] { new { role = "user", content = assessment.Content } } });
         var apiKey = configuration["Analista:ApiServerApiKey"];
         if (!string.IsNullOrWhiteSpace(apiKey)) request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
         try
