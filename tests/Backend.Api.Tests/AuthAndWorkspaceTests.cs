@@ -3,6 +3,9 @@ using System.Net.Http.Json;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+
+[assembly: CollectionBehavior(DisableTestParallelization = true)]
 
 namespace Backend.Api.Tests;
 
@@ -35,9 +38,16 @@ public sealed class TestApplicationFactory : WebApplicationFactory<Program>
     }
 }
 
-public sealed class AuthAndWorkspaceTests(TestApplicationFactory factory) : IClassFixture<TestApplicationFactory>
+public sealed class AuthAndWorkspaceTests : IClassFixture<TestApplicationFactory>
 {
-    private readonly TestApplicationFactory _factory = factory;
+    private readonly TestApplicationFactory _factory;
+
+    public AuthAndWorkspaceTests(TestApplicationFactory factory)
+    {
+        _factory = factory;
+        using var scope = _factory.Services.CreateScope();
+        scope.ServiceProvider.GetRequiredService<Backend.Api.Auth.LoginAttemptService>().Clear();
+    }
 
     [Fact]
     public async Task WorkspaceRequiresValidSessionAndValidSessionAllowsWorkspaceAccess()
@@ -51,6 +61,19 @@ public sealed class AuthAndWorkspaceTests(TestApplicationFactory factory) : ICla
 
         var create = await client.PostAsJsonAsync("/workspaces", new { Name = "Protected", Slug = $"protected-{Guid.NewGuid():N}", PlatformRef = "org/repo" });
         Assert.Equal(HttpStatusCode.Created, create.StatusCode);
+    }
+
+    [Fact]
+    public async Task RepeatedInvalidLoginsAreTemporarilyBlockedAndDoNotLogUsername()
+    {
+        using var client = _factory.CreateClient();
+        for (var attempt = 1; attempt <= 5; attempt++)
+            Assert.Equal(HttpStatusCode.Unauthorized, (await client.PostAsJsonAsync("/auth/login", new { Username = "operator", Password = "wrong" })).StatusCode);
+
+        var blocked = await client.PostAsJsonAsync("/auth/login", new { Username = "operator", Password = "secret" });
+        Assert.Equal(HttpStatusCode.TooManyRequests, blocked.StatusCode);
+        Assert.True(blocked.Headers.TryGetValues("Retry-After", out var retryAfter));
+        Assert.Contains("900", retryAfter!);
     }
 
     [Fact]

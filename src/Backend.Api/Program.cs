@@ -6,8 +6,11 @@ builder.Services.AddOptions<AuthOptions>()
     .Validate(options => !string.IsNullOrWhiteSpace(options.Username), "Authentication:Username is required")
     .Validate(options => !string.IsNullOrWhiteSpace(options.Password), "Authentication:Password is required")
     .Validate(options => !string.IsNullOrWhiteSpace(options.SigningKey) && options.SigningKey.Length >= 32, "Authentication:SigningKey is required and must be at least 32 characters")
+    .Validate(options => options.LoginMaxFailures > 0, "Authentication:LoginMaxFailures must be positive")
+    .Validate(options => options.LoginFailureWindow > TimeSpan.Zero, "Authentication:LoginFailureWindow must be positive")
+    .Validate(options => options.LoginLockoutDuration > TimeSpan.Zero, "Authentication:LoginLockoutDuration must be positive")
     .ValidateOnStart();
-builder.Services.AddSingleton<SessionService>(); builder.Services.AddDbContext<AppDbContext>(o=>o.UseSqlite(builder.Configuration.GetConnectionString("Default")));
+builder.Services.AddSingleton<SessionService>(); builder.Services.AddSingleton<LoginAttemptService>(); builder.Services.AddDbContext<AppDbContext>(o=>o.UseSqlite(builder.Configuration.GetConnectionString("Default")));
 builder.Services.AddOpenTelemetry().WithTracing(t=>t.AddAspNetCoreInstrumentation().AddConsoleExporter()).WithMetrics(m=>m.AddAspNetCoreInstrumentation().AddConsoleExporter());
 builder.Services.AddEndpointsApiExplorer(); builder.Services.AddSwaggerGen(c=>{ c.AddSecurityDefinition("sessionCookie",new Microsoft.OpenApi.Models.OpenApiSecurityScheme{Type=Microsoft.OpenApi.Models.SecuritySchemeType.ApiKey,In=Microsoft.OpenApi.Models.ParameterLocation.Cookie,Name="sdlc_session",Description="Signed session cookie. Obtain via POST /auth/login."}); c.OperationFilter<SessionSecurityOperationFilter>(); });
 var app=builder.Build(); using (var scope=app.Services.CreateScope()) { scope.ServiceProvider.GetRequiredService<AppDbContext>().Database.Migrate(); } app.UseSerilogRequestLogging(); app.UseMiddleware<SessionMiddleware>(); app.UseSwagger(); app.UseSwaggerUI(); app.MapAuthEndpoints(); app.MapWorkspaceEndpoints(); app.Run();
