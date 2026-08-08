@@ -23,6 +23,7 @@ builder.Services.AddSingleton<SessionService>();
 builder.Services.AddSingleton<LoginAttemptService>();
 builder.Services.AddSingleton<Backend.Api.Services.AnalystDorGate>();
 builder.Services.AddSingleton<Backend.Api.Services.PlatformContentClient>();
+builder.Services.AddSingleton<Backend.Api.Services.ISecretStore, Backend.Api.Services.KubernetesSecretStore>();
 builder.Services.AddHttpClient("Platform");
 // Analista:ApiServerBaseUrl is deployment-controlled configuration. It is never accepted from HTTP input;
 // operators must restrict it to an approved internal Analista service (and protect its egress/network path).
@@ -31,7 +32,7 @@ builder.Services.AddDbContext<AppDbContext>(o => o.UseSqlite(builder.Configurati
 builder.Services.AddOpenTelemetry().WithTracing(t => t.AddAspNetCoreInstrumentation().AddConsoleExporter()).WithMetrics(m => m.AddAspNetCoreInstrumentation().AddConsoleExporter());
 builder.Services.AddEndpointsApiExplorer(); builder.Services.AddSwaggerGen(c => { c.AddSecurityDefinition("sessionCookie", new Microsoft.OpenApi.Models.OpenApiSecurityScheme { Type = Microsoft.OpenApi.Models.SecuritySchemeType.ApiKey, In = Microsoft.OpenApi.Models.ParameterLocation.Cookie, Name = "sdlc_session" }); c.OperationFilter<SessionSecurityOperationFilter>(); });
 var app = builder.Build();
-app.UseForwardedHeaders(new ForwardedHeadersOptions { ForwardedHeaders = ForwardedHeaders.XForwardedFor, KnownProxies = { IPAddress.Loopback } }); using (var scope = app.Services.CreateScope()) scope.ServiceProvider.GetRequiredService<AppDbContext>().Database.Migrate(); app.UseSerilogRequestLogging(); app.UseMiddleware<SessionMiddleware>(); app.UseSwagger(); app.UseSwaggerUI(); app.MapAuthEndpoints(); app.MapWorkspaceEndpoints(); app.MapSpecUsEndpoints(); app.MapAssessmentEndpoints(); app.MapSpecListingEndpoints();
+app.UseForwardedHeaders(new ForwardedHeadersOptions { ForwardedHeaders = ForwardedHeaders.XForwardedFor, KnownProxies = { IPAddress.Loopback } }); using (var scope = app.Services.CreateScope()) scope.ServiceProvider.GetRequiredService<AppDbContext>().Database.Migrate(); app.UseSerilogRequestLogging(); app.UseMiddleware<SessionMiddleware>(); app.UseSwagger(); app.UseSwaggerUI(); app.MapAuthEndpoints(); app.MapWorkspaceEndpoints(); app.MapSpecUsEndpoints(); app.MapAssessmentEndpoints(); app.MapSpecListingEndpoints(); app.MapCredentialEndpoints();
 // Resource/tenant authorization beyond the single-operator session (including on the /subir-us publish
 // endpoint and the assessment endpoints below) is intentionally out of scope for this phase; see
 // frontend-operacional-sdlc-hermes.md sections 7 and 11 (single operator login, no multitenant support
