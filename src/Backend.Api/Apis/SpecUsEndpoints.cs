@@ -31,7 +31,7 @@ public static class SpecUsEndpoints
   var spec = await db.Specs.SingleOrDefaultAsync(x=>x.WorkspaceId==id && x.Path==specPath,ct);
   var pipeline = new PipelineInstance { WorkspaceId=id, SpecId=spec?.Id, FaseAtual=PipelinePhase.Requisitos, GateStatus=GateStatus.Approved, ExternalRef=external, CreatedAt=DateTime.UtcNow };
   db.PipelineInstances.Add(pipeline); await db.SaveChangesAsync(ct);
-  return Results.Json(new { pipeline_instance = pipeline }, statusCode: 201);
+  return Results.Json(new { pipeline_instance = new PipelineInstanceResponse(pipeline.Id, pipeline.WorkspaceId, pipeline.SpecId, pipeline.FaseAtual.ToString(), pipeline.GateStatus.ToString(), pipeline.ExternalRef, pipeline.PrRef, pipeline.CreatedAt) }, statusCode: 201);
  }
  private static async Task<string?> Fetch(Workspace w,string repo,string path,IHttpClientFactory f,IConfiguration c,CancellationToken ct)
  { try { using var req = new HttpRequestMessage(HttpMethod.Get, w.Platform==WorkspacePlatform.Github ? $"https://api.github.com/repos/{repo}/contents/{Uri.EscapeDataString(path).Replace("%2F","/")}" : AdoUrl(repo,path)); AddAuth(req,w.Platform,c); using var r=await f.CreateClient("Platform").SendAsync(req,ct); if(!r.IsSuccessStatusCode)return null; if(w.Platform==WorkspacePlatform.Github){var x=await r.Content.ReadFromJsonAsync<JsonElement>(cancellationToken:ct); return Encoding.UTF8.GetString(Convert.FromBase64String(x.GetProperty("content").GetString()!.Replace("\n","")));} var a=await r.Content.ReadFromJsonAsync<JsonElement>(cancellationToken:ct); return a.TryGetProperty("content",out var content)?content.GetString():await r.Content.ReadAsStringAsync(ct); } catch(Exception ex) when(ex is HttpRequestException or TaskCanceledException or JsonException or FormatException){return null;} }
@@ -42,3 +42,9 @@ public static class SpecUsEndpoints
  internal static string Extract(string s,ILogger l){var user=Regex.Match(s,@"(?ms)^##\s+User Story\s*\n(?<x>.*?)(?=^##\s|\z)",RegexOptions.Multiline).Groups["x"].Value.Trim();var ac=Regex.Match(s,@"(?ms)^##\s+Criterios de aceite\s*\n(?<x>.*?)(?=^##\s|\z)",RegexOptions.Multiline).Groups["x"].Value.Trim();var w=Regex.Match(s,@"(?ms)^##\s+WBS[^\n]*\n(?<x>.*?)(?=^##\s|\z)",RegexOptions.Multiline).Groups["x"].Value.Trim();if(user=="")l.LogWarning("Spec extraction section missing: User Story");if(ac=="")l.LogWarning("Spec extraction section missing: Criterios de aceite");if(w=="")l.LogWarning("Spec extraction section missing: WBS");return $"## User Story\n{user}\n\n## Criterios de aceite\n{ac}\n\n## WBS - Plano de implementacao\n{w}";}
  internal static string Html(string x){var sb=new StringBuilder();foreach(var line in x.Split('\n')){if(line.StartsWith("## "))sb.Append("<h2>").Append(System.Net.WebUtility.HtmlEncode(line[3..])).Append("</h2>");else if(line.StartsWith("- "))sb.Append("<li>").Append(Regex.Replace(System.Net.WebUtility.HtmlEncode(line[2..]),@"\*\*(.+?)\*\*","<strong>$1</strong>")).Append("</li>");else if(line.Trim()!="")sb.Append("<p>").Append(System.Net.WebUtility.HtmlEncode(line)).Append("</p>");}return sb.ToString();}
 }
+
+// Projects PipelineInstance to avoid serializing the EF-tracked entity directly: the Workspace
+// navigation gets fixed up in-memory to the already-tracked workspace loaded earlier in Handle,
+// and Workspace.PipelineInstances points back at this same instance, so System.Text.Json walks
+// Workspace <-> PipelineInstances forever and throws (exceeds the default max depth).
+public sealed record PipelineInstanceResponse(long Id, long WorkspaceId, long? SpecId, string FaseAtual, string GateStatus, string ExternalRef, string? PrRef, DateTime CreatedAt);
