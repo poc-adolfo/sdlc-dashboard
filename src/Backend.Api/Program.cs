@@ -2,12 +2,14 @@ using Backend.Api.Apis;
 using Backend.Api.Auth;
 using Backend.Persistence.Data;
 using Microsoft.AspNetCore.HttpOverrides;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Trace;
 using Serilog;
 using Swashbuckle.AspNetCore.SwaggerGen;
 using System.Net;
+using System.Threading.RateLimiting;
 using AuthOptions = Backend.Api.Auth.SessionOptions;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -34,10 +36,31 @@ builder.Services.AddHttpClient("Platform");
 // operators must restrict it to an approved internal Analista service (and protect its egress/network path).
 builder.Services.AddHttpClient("Analista", (client, http) => { http.Timeout = TimeSpan.FromSeconds(builder.Configuration.GetValue("Analista:TimeoutSeconds", 30)); }).ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler { AllowAutoRedirect = false });
 builder.Services.AddDbContext<AppDbContext>(o => o.UseSqlite(builder.Configuration.GetConnectionString("Default") ?? $"Data Source={builder.Configuration["DatabasePath"] ?? "workspace.db"}"));
+// Security review on PR #15: /webhooks/* is public and unauthenticated-until-HMAC-checked, so besides
+// the per-request body size cap it also needs a cap on request *volume* per source, or a caller without
+// the signing secret can still burn memory/CPU/DB-lookup cost by firing many small requests. This is an
+// app-level backstop (still worth pairing with ingress/WAF-level limiting in the k3s deployment, item
+// 17 - not duplicated here) so the endpoint degrades instead of being wide open.
+builder.Services.AddRateLimiter(options =>
+{
+    options.OnRejected = (context, _) =>
+    {
+        context.HttpContext.Response.StatusCode = StatusCodes.Status429TooManyRequests;
+        return ValueTask.CompletedTask;
+    };
+    options.AddPolicy("webhooks", httpContext => RateLimitPartition.GetFixedWindowLimiter(
+        httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+        _ => new FixedWindowRateLimiterOptions
+        {
+            PermitLimit = builder.Configuration.GetValue("Webhooks:RateLimit:PermitLimit", 30),
+            Window = TimeSpan.FromSeconds(builder.Configuration.GetValue("Webhooks:RateLimit:WindowSeconds", 60)),
+            QueueLimit = 0
+        }));
+});
 builder.Services.AddOpenTelemetry().WithTracing(t => t.AddAspNetCoreInstrumentation().AddConsoleExporter()).WithMetrics(m => m.AddAspNetCoreInstrumentation().AddConsoleExporter());
 builder.Services.AddEndpointsApiExplorer(); builder.Services.AddSwaggerGen(c => { c.AddSecurityDefinition("sessionCookie", new Microsoft.OpenApi.Models.OpenApiSecurityScheme { Type = Microsoft.OpenApi.Models.SecuritySchemeType.ApiKey, In = Microsoft.OpenApi.Models.ParameterLocation.Cookie, Name = "sdlc_session" }); c.OperationFilter<SessionSecurityOperationFilter>(); });
 var app = builder.Build();
-app.UseForwardedHeaders(new ForwardedHeadersOptions { ForwardedHeaders = ForwardedHeaders.XForwardedFor, KnownProxies = { IPAddress.Loopback } }); using (var scope = app.Services.CreateScope()) scope.ServiceProvider.GetRequiredService<AppDbContext>().Database.Migrate(); app.UseSerilogRequestLogging(); app.UseMiddleware<SessionMiddleware>(); app.UseSwagger(); app.UseSwaggerUI(); app.MapAuthEndpoints(); app.MapWorkspaceEndpoints(); app.MapSpecUsEndpoints(); app.MapAssessmentEndpoints(); app.MapSpecListingEndpoints(); app.MapCredentialEndpoints(); app.MapWebhookEndpoints();
+app.UseForwardedHeaders(new ForwardedHeadersOptions { ForwardedHeaders = ForwardedHeaders.XForwardedFor, KnownProxies = { IPAddress.Loopback } }); using (var scope = app.Services.CreateScope()) scope.ServiceProvider.GetRequiredService<AppDbContext>().Database.Migrate(); app.UseSerilogRequestLogging(); app.UseRateLimiter(); app.UseMiddleware<SessionMiddleware>(); app.UseSwagger(); app.UseSwaggerUI(); app.MapAuthEndpoints(); app.MapWorkspaceEndpoints(); app.MapSpecUsEndpoints(); app.MapAssessmentEndpoints(); app.MapSpecListingEndpoints(); app.MapCredentialEndpoints(); app.MapWebhookEndpoints();
 // Resource/tenant authorization beyond the single-operator session (including on the /subir-us publish
 // endpoint and the assessment endpoints below) is intentionally out of scope for this phase; see
 // frontend-operacional-sdlc-hermes.md sections 7 and 11 (single operator login, no multitenant support

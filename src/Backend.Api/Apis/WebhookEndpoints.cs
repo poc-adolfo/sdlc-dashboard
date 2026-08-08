@@ -6,6 +6,7 @@ using Backend.Api.Services;
 using Backend.Persistence.Data;
 using Backend.Persistence.Domain;
 using Microsoft.AspNetCore.Http.Features;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 
 namespace Backend.Api.Apis;
@@ -22,12 +23,20 @@ public static class WebhookEndpoints
 {
     public static IEndpointRouteBuilder MapWebhookEndpoints(this IEndpointRouteBuilder app)
     {
-        app.MapPost("/webhooks/{workspaceId:long}", Receive);
+        app.MapPost("/webhooks/{workspaceId:long}", Receive).RequireRateLimiting("webhooks");
         return app;
     }
 
     private static async Task<IResult> Receive(long workspaceId, HttpRequest request, AppDbContext db, ISecretStore secrets, IConfiguration configuration, ILoggerFactory loggerFactory, CancellationToken ct)
     {
+        // Security review on PR #15: looking the workspace up before any auth check lets a caller probe
+        // which numeric ids exist (404 vs. proceeding further) and spends a DB round-trip before the
+        // request is proven legitimate. Both are real, but not fixable without weakening the
+        // per-workspace webhook secret design (GitHub's AppSecretRef is looked up *from* the workspace
+        // row - there is no secret to check before knowing which workspace this is, short of a single
+        // shared secret across all workspaces, which is a bigger step back). The rate limiter below
+        // bounds the cost of both; full mitigation is out of scope for this phase, consistent with the
+        // single-tenant-session trade-off already accepted in Program.cs.
         var workspace = await db.Workspaces.SingleOrDefaultAsync(w => w.Id == workspaceId, ct);
         if (workspace is null) return Results.NotFound();
 
@@ -35,7 +44,8 @@ public static class WebhookEndpoints
         // Internet can POST here, signed or not. Cap the body Kestrel will accept *before* reading any
         // of it, so an oversized or endless payload can't be used to exhaust memory/CPU before the
         // signature is even checked (unsigned/invalid requests are the common case for abuse, and must
-        // be cheap to reject).
+        // be cheap to reject). RequireRateLimiting("webhooks") on the route bounds request *volume* per
+        // source on top of this per-request cap.
         var maxBodyBytes = configuration.GetValue("Webhooks:MaxBodyBytes", 1_000_000);
         var sizeFeature = request.HttpContext.Features.Get<IHttpMaxRequestBodySizeFeature>();
         if (sizeFeature is not null && !sizeFeature.IsReadOnly) sizeFeature.MaxRequestBodySize = maxBodyBytes;

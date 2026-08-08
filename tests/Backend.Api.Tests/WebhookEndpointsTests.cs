@@ -6,8 +6,10 @@ using System.Text.Json;
 using Backend.Api.Apis;
 using Backend.Persistence.Data;
 using Backend.Persistence.Domain;
+using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace Backend.Api.Tests;
@@ -127,6 +129,26 @@ public sealed class WebhookEndpointsTests
     // it. Setting IHttpMaxRequestBodySizeFeature.MaxRequestBodySize before reading is the documented,
     // standard ASP.NET Core mechanism for this (see Receive's comment); Kestrel honoring it is a
     // framework guarantee, not app logic that needs re-verifying here.
+
+    [Fact]
+    public async Task ExceedingTheRateLimitReturnsTooManyRequests()
+    {
+        // Security review on PR #15: bounds request *volume* per source, on top of the per-request
+        // body size cap. Uses a tiny configured limit so the test doesn't need to fire 30+ requests.
+        using var factory = new CredentialApplicationFactory().WithWebHostBuilder(builder =>
+            builder.ConfigureAppConfiguration((_, configuration) => configuration.AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["Webhooks:RateLimit:PermitLimit"] = "2",
+                ["Webhooks:RateLimit:WindowSeconds"] = "60"
+            })));
+        using var client = factory.CreateClient();
+
+        for (var i = 0; i < 2; i++)
+            Assert.Equal(HttpStatusCode.NotFound, (await client.PostAsync("/webhooks/999999", new StringContent("{}"))).StatusCode);
+
+        var limited = await client.PostAsync("/webhooks/999999", new StringContent("{}"));
+        Assert.Equal(HttpStatusCode.TooManyRequests, limited.StatusCode);
+    }
 
     [Fact]
     public async Task MissingWorkspaceReturnsNotFound()
