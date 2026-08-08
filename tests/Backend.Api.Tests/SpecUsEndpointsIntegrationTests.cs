@@ -174,6 +174,32 @@ public sealed class SpecUsEndpointsIntegrationTests
     }
 
     [Fact]
+    public async Task GitHubPublishAppliesTheSdlcPipelineLabelAndAnOriginMarkerNamingTheFullSpecPath()
+    {
+        // QA finding on PR #17: the reconciliation poller only recreates a pipeline_instance for an
+        // Issue that carries both the "sdlc-pipeline" label and an <!-- sdlc-dashboard:spec=... -->
+        // marker naming a real spec path (ReconciliationPollerServiceTests). This is the other half of
+        // that contract: what "Subir US" actually sends when creating the Issue.
+        using var factory = new SpecUsApplicationFactory();
+        factory.Handler.On(r => r.Method == HttpMethod.Get && r.RequestUri!.Host == "api.github.com" && r.RequestUri.AbsolutePath.Contains("/contents/"), _ => GitHubContentResponse(SpecMarkdown));
+        factory.Handler.On(r => r.RequestUri!.Host == "analista.test", _ => AnalistaResponse(DorApproved));
+        factory.Handler.On(r => r.Method == HttpMethod.Post && r.RequestUri!.AbsolutePath.EndsWith("/issues"), _ => new HttpResponseMessage(HttpStatusCode.Created) { Content = JsonContent.Create(new { number = 42 }) });
+
+        using var client = await AuthenticatedClient(factory);
+        var workspaceId = await CreateGitHubWorkspace(client);
+
+        var response = await client.PostAsync($"/workspaces/{workspaceId}/specs/docs/spec.md/subir-us", content: null);
+
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        var issueCall = Assert.Single(factory.Handler.Captured, c => c.Uri.AbsolutePath.EndsWith("/issues"));
+        var issuePayload = JsonDocument.Parse(issueCall.Body!).RootElement;
+        var labels = issuePayload.GetProperty("labels").EnumerateArray().Select(x => x.GetString()).ToList();
+        Assert.Contains("sdlc-pipeline", labels);
+        var issueBody = issuePayload.GetProperty("body").GetString()!;
+        Assert.Contains("<!-- sdlc-dashboard:spec=docs/spec.md -->", issueBody);
+    }
+
+    [Fact]
     public async Task AzureDevOpsPublishSucceedsAndPersistsWorkItemIdAsExternalRef()
     {
         using var factory = new SpecUsApplicationFactory();

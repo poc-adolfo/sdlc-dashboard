@@ -275,6 +275,60 @@ public sealed class ReconciliationPollerServiceTests
     }
 }
 
+public sealed class ReconciliationPollerServiceHostRegistrationTests
+{
+    // QA finding on PR #17: Program.cs registers ReconciliationPollerService as a hosted service
+    // everywhere except the Testing environment (to avoid unwanted background platform calls during
+    // the test run - see ReconciliationApplicationFactory above, which stays on "Testing" for that
+    // reason). This verifies the *other* half of that conditional actually holds: outside Testing, the
+    // hosted service really is registered and starts without throwing. "Staging" here is just "some
+    // real environment name that is neither Development nor Testing".
+    private sealed class NonTestingApplicationFactory : WebApplicationFactory<Program>
+    {
+        private readonly string _databasePath = Path.Combine(Path.GetTempPath(), $"reconcile-hosting-tests-{Guid.NewGuid():N}.db");
+
+        protected override void ConfigureWebHost(IWebHostBuilder builder)
+        {
+            builder.UseEnvironment("Staging");
+            builder.ConfigureAppConfiguration((_, configuration) => configuration.AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["Authentication:Username"] = "operator",
+                ["Authentication:Password"] = "secret",
+                ["Authentication:SigningKey"] = "DoBqIVy5zTyTGicih2WShaYg6goTsq0lvS7XlPiHWps=",
+                ["Authentication:SecureCookie"] = "false",
+                ["ConnectionStrings:Default"] = $"Data Source={_databasePath}",
+                ["Analista:ApiServerBaseUrl"] = "https://analista.test",
+                ["Analista:AllowedHost"] = "analista.test",
+                // Staying well clear of any real GitHub/DB traffic: no workspaces get created in this
+                // test, so RunOnceAsync's first pass finds nothing to do and just waits on the timer.
+                ["Reconciliation:IntervalMinutes"] = "60"
+            }));
+            builder.ConfigureTestServices(services => services.AddSingleton<ISecretStore>(new FakeSecretStore()));
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            base.Dispose(disposing);
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            foreach (var suffix in new[] { "", "-shm", "-wal" })
+            {
+                var path = _databasePath + suffix;
+                try { if (File.Exists(path)) File.Delete(path); } catch (IOException) { }
+            }
+        }
+    }
+
+    [Fact]
+    public void IsRegisteredAsAHostedServiceOutsideTheTestingEnvironment()
+    {
+        using var factory = new NonTestingApplicationFactory();
+
+        var hosted = factory.Services.GetServices<Microsoft.Extensions.Hosting.IHostedService>();
+
+        Assert.Contains(hosted, s => s is ReconciliationPollerService);
+    }
+}
+
 public sealed class TryCreatePipelineInstanceAsyncTests
 {
     private static AppDbContext CreateMigratedContext(out Microsoft.Data.Sqlite.SqliteConnection connection)
@@ -316,5 +370,58 @@ public sealed class TryCreatePipelineInstanceAsyncTests
 
         await Assert.ThrowsAsync<Microsoft.EntityFrameworkCore.DbUpdateException>(() =>
             ReconciliationPollerService.TryCreatePipelineInstanceAsync(db, workspaceId: 999999, "7", CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task TwoGenuinelyConcurrentAttemptsForTheSameExternalRefLeaveExactlyOneRow()
+    {
+        // QA finding on PR #17: ConfirmedUniqueIndexRaceIsSwallowed only pre-creates the "losing" row
+        // and calls TryCreatePipelineInstanceAsync once in the same DbContext - it never exercises a
+        // real interleaving. This drives two independent connections/DbContexts against the same
+        // on-disk SQLite file (an in-memory ":memory:" connection can't be shared across connections),
+        // mirroring two actual reconciliation passes racing each other.
+        var dbPath = Path.Combine(Path.GetTempPath(), $"reconcile-race-{Guid.NewGuid():N}.db");
+        try
+        {
+            long workspaceId;
+            using (var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={dbPath}"))
+            {
+                connection.Open();
+                using var db = new AppDbContext(new Microsoft.EntityFrameworkCore.DbContextOptionsBuilder<AppDbContext>().UseSqlite(connection).Options);
+                db.Database.Migrate();
+                var workspace = new Backend.Persistence.Domain.Workspace { Name = "W", Slug = "w", PlatformRef = "acme/platform" };
+                db.Workspaces.Add(workspace);
+                await db.SaveChangesAsync();
+                workspaceId = workspace.Id;
+            }
+
+            async Task Attempt()
+            {
+                using var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={dbPath}");
+                connection.Open();
+                using var db = new AppDbContext(new Microsoft.EntityFrameworkCore.DbContextOptionsBuilder<AppDbContext>().UseSqlite(connection).Options);
+                await ReconciliationPollerService.TryCreatePipelineInstanceAsync(db, workspaceId, "7", CancellationToken.None);
+            }
+
+            var attempt1 = Attempt();
+            var attempt2 = Attempt();
+            // Neither call may throw: whichever side loses the race must observe the row the winner
+            // just committed and swallow its own DbUpdateException.
+            await Task.WhenAll(attempt1, attempt2);
+
+            using var verifyConnection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={dbPath}");
+            verifyConnection.Open();
+            using var verifyDb = new AppDbContext(new Microsoft.EntityFrameworkCore.DbContextOptionsBuilder<AppDbContext>().UseSqlite(verifyConnection).Options);
+            Assert.Equal(1, await verifyDb.PipelineInstances.CountAsync(p => p.WorkspaceId == workspaceId && p.ExternalRef == "7"));
+        }
+        finally
+        {
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            foreach (var suffix in new[] { "", "-shm", "-wal" })
+            {
+                var path = dbPath + suffix;
+                try { if (File.Exists(path)) File.Delete(path); } catch (IOException) { }
+            }
+        }
     }
 }

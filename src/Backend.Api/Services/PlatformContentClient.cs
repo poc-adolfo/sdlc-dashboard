@@ -83,6 +83,17 @@ public sealed class PlatformContentClient(IHttpClientFactory clients, IConfigura
     /// ReconciliationPollerService to find Issues created by "Subir US" (seção 5.3) whose local
     /// pipeline_instance write never landed (seção 11). Azure DevOps returns null (not implemented).
     /// </summary>
+    /// <remarks>
+    /// QA finding on PR #17: only the first <c>per_page=100</c> labeled Issues are fetched - no
+    /// pagination. Explicit decision: reconciliation only needs to recover Issues whose *local write
+    /// failed right after creation*, which self-heals every run (once the row exists, later runs skip
+    /// it via the WorkspaceId+ExternalRef check before this method is even relevant) - it does not need
+    /// to see every historical "sdlc-pipeline" Issue, only ones currently missing a row. A given
+    /// workspace accumulating over 100 *simultaneously missing* rows implies either a sustained outage
+    /// far past this app's other failure budgets or the label being reused outside "Subir US", both of
+    /// which need operator attention regardless of pagination. Revisit if/when a workspace's real usage
+    /// approaches that count.
+    /// </remarks>
     public async Task<IReadOnlyList<(string Number, string Body)>?> ListLabeledIssuesAsync(Workspace workspace, string label, CancellationToken ct)
     {
         if (workspace.Platform != WorkspacePlatform.Github) return null;
