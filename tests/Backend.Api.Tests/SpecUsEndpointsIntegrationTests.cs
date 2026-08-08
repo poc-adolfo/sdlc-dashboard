@@ -298,6 +298,44 @@ public sealed class SpecUsEndpointsIntegrationTests
     }
 
     [Fact]
+    public async Task PublishLinksSpecIdWhenTheSpecWasPreviouslyListedWithAConfiguredSpecsPath()
+    {
+        // Regression test: the spec index (SpecListingEndpoints) always stores the full repo-relative
+        // path ("specs/foo.md"), while /subir-us's route only carries the part after specs_path
+        // ("foo.md") - the lookup used to compare against the route segment instead of the same full
+        // path used by the index, so SpecId never linked whenever specs_path was configured.
+        using var factory = new SpecUsApplicationFactory();
+        const string specWithStatus = "# Checkout\n\n> Status: rascunho (2026-08-05).\n\n## User Story\n**Como** operador, **quero** publicar.\n\n## Criterios de aceite\n- [ ] Issue criada\n\n## WBS - Plano de implementacao\n1.1 Endpoint\n";
+        factory.Handler.On(r => r.Method == HttpMethod.Get && r.RequestUri!.Host == "api.github.com" && r.RequestUri.AbsolutePath == "/repos/acme/platform/contents/specs", _ =>
+            new HttpResponseMessage(HttpStatusCode.OK) { Content = JsonContent.Create(new[] { new { name = "foo.md", path = "specs/foo.md", type = "file" } }) });
+        factory.Handler.On(r => r.Method == HttpMethod.Get && r.RequestUri!.Host == "api.github.com" && r.RequestUri.AbsolutePath.Contains("/contents/"), _ => GitHubContentResponse(specWithStatus));
+        factory.Handler.On(r => r.RequestUri!.Host == "analista.test", _ => AnalistaResponse(DorApproved));
+        factory.Handler.On(r => r.Method == HttpMethod.Post && r.RequestUri!.AbsolutePath.EndsWith("/issues"), _ => new HttpResponseMessage(HttpStatusCode.Created) { Content = JsonContent.Create(new { number = 1 }) });
+
+        using var client = await AuthenticatedClient(factory);
+        var create = await client.PostAsJsonAsync("/workspaces", new { name = $"WS-{Guid.NewGuid():N}", platform = "github", platform_ref = "acme/platform", specs_path = "specs/" });
+        create.EnsureSuccessStatusCode();
+        var workspaceId = (await create.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetInt64();
+
+        var listing = await client.GetAsync($"/workspaces/{workspaceId}/specs");
+        Assert.Equal(HttpStatusCode.OK, listing.StatusCode);
+        var listedSpecId = (await listing.Content.ReadFromJsonAsync<JsonElement>())[0].GetProperty("path").GetString();
+        Assert.Equal("specs/foo.md", listedSpecId);
+
+        var response = await client.PostAsync($"/workspaces/{workspaceId}/specs/foo.md/subir-us", content: null);
+
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        var body = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.True(body.GetProperty("pipeline_instance").TryGetProperty("specId", out var specIdElement));
+        Assert.NotEqual(JsonValueKind.Null, specIdElement.ValueKind);
+
+        using var scope = factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var spec = await db.Specs.SingleAsync(s => s.WorkspaceId == workspaceId && s.Path == "specs/foo.md");
+        Assert.Equal(spec.Id, specIdElement.GetInt64());
+    }
+
+    [Fact]
     public async Task SpecsRepoDifferentFromPlatformRefFetchesFromSpecsRepoAndAttachesFullSpecToIssue()
     {
         using var factory = new SpecUsApplicationFactory();
