@@ -22,6 +22,14 @@ builder.Services.AddDbContext<AppDbContext>(o => o.UseSqlite(builder.Configurati
 builder.Services.AddOpenTelemetry().WithTracing(t => t.AddAspNetCoreInstrumentation().AddConsoleExporter()).WithMetrics(m => m.AddAspNetCoreInstrumentation().AddConsoleExporter());
 builder.Services.AddEndpointsApiExplorer(); builder.Services.AddSwaggerGen(c => { c.AddSecurityDefinition("sessionCookie", new Microsoft.OpenApi.Models.OpenApiSecurityScheme { Type = Microsoft.OpenApi.Models.SecuritySchemeType.ApiKey, In = Microsoft.OpenApi.Models.ParameterLocation.Cookie, Name = "sdlc_session" }); c.OperationFilter<SessionSecurityOperationFilter>(); });
 var app = builder.Build();
-app.UseForwardedHeaders(new ForwardedHeadersOptions { ForwardedHeaders = ForwardedHeaders.XForwardedFor, KnownProxies = { IPAddress.Loopback } }); using (var scope = app.Services.CreateScope()) scope.ServiceProvider.GetRequiredService<AppDbContext>().Database.Migrate(); app.UseSerilogRequestLogging(); app.UseMiddleware<SessionMiddleware>(); app.UseSwagger(); app.UseSwaggerUI(); app.MapAuthEndpoints(); app.MapWorkspaceEndpoints(); app.MapSpecUsEndpoints(); app.Run();
+app.UseForwardedHeaders(new ForwardedHeadersOptions { ForwardedHeaders = ForwardedHeaders.XForwardedFor, KnownProxies = { IPAddress.Loopback } }); using (var scope = app.Services.CreateScope()) scope.ServiceProvider.GetRequiredService<AppDbContext>().Database.Migrate(); app.UseSerilogRequestLogging(); app.UseMiddleware<SessionMiddleware>(); app.UseSwagger(); app.UseSwaggerUI(); app.MapAuthEndpoints(); app.MapWorkspaceEndpoints(); app.MapSpecUsEndpoints();
+// Resource/tenant authorization beyond the single-operator session (including on the /subir-us publish
+// endpoint added by MapSpecUsEndpoints) is intentionally out of scope for this phase; see
+// frontend-operacional-sdlc-hermes.md sections 7 and 11 (single operator login, no multitenant support
+// yet). CSRF on this cookie-based session is mitigated by SameSite=Strict on the session cookie (see
+// AuthEndpoints.cs). This trade-off was evaluated by the Security gate in PR #10 review #4874587076 and
+// accepted as a documented risk for future production/multitenant work, not a blocking defect; any
+// review should treat that precedent as still governing until multitenant authorization ships.
+app.Run();
 public sealed class SessionSecurityOperationFilter : IOperationFilter { public void Apply(Microsoft.OpenApi.Models.OpenApiOperation operation, OperationFilterContext context) { if (context.ApiDescription.RelativePath?.Equals("auth/login", StringComparison.OrdinalIgnoreCase) == true) return; operation.Security = new List<Microsoft.OpenApi.Models.OpenApiSecurityRequirement> { new() { [new Microsoft.OpenApi.Models.OpenApiSecurityScheme { Reference = new Microsoft.OpenApi.Models.OpenApiReference { Type = Microsoft.OpenApi.Models.ReferenceType.SecurityScheme, Id = "sessionCookie" } }] = Array.Empty<string>() } }; } }
 public partial class Program { }

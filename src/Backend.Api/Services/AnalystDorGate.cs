@@ -13,6 +13,14 @@ public sealed class AnalystDorGate(IHttpClientFactory clients, IConfiguration co
             logger.LogError("Analista:ApiServerBaseUrl is not configured");
             return null;
         }
+        if (!Uri.TryCreate(baseUrl, UriKind.Absolute, out var parsedBaseUrl) || parsedBaseUrl.Scheme != Uri.UriSchemeHttps)
+        {
+            // Analista:ApiServerBaseUrl carries the full spec/assessment content plus an optional
+            // bearer key on every call; refusing non-HTTPS destinations bounds SSRF/credential-leak
+            // blast radius to configuration mistakes rather than plaintext exfiltration.
+            logger.LogError("Analista:ApiServerBaseUrl must be an absolute https URL");
+            return null;
+        }
 
         try
         {
