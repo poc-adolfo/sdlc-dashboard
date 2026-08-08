@@ -1,4 +1,3 @@
-using System.Text.RegularExpressions;
 using Backend.Api.Apis;
 using Backend.Persistence.Data;
 using Backend.Persistence.Domain;
@@ -8,17 +7,14 @@ namespace Backend.Api.Services;
 
 /// <summary>
 /// Periodic reconciliation (seção 6.2/15, 5 min default) against real platform state, correcting drift
-/// from lost/duplicated webhooks: recreates pipeline_instance rows for labeled Issues whose local write
-/// never landed (seção 11), and re-derives fase_atual from the PR's actual current reviews when a
-/// pull_request_review webhook was lost. GitHub only in this pass - Azure DevOps event mapping isn't
-/// implemented yet (see WebhookEndpoints), so there is nothing for reconciliation to double-check there
-/// either; PlatformContentClient's ADO methods return null and are skipped identically to a platform error.
+/// from lost/duplicated webhooks: recreates pipeline_instance rows for spec_publication entries whose
+/// local write never landed (seção 11), and re-derives fase_atual from the PR's actual current reviews
+/// when a pull_request_review webhook was lost. Phase-drift recovery is GitHub only - Azure DevOps event
+/// mapping isn't implemented yet (see WebhookEndpoints), so PlatformContentClient's ADO methods return
+/// null and are skipped identically to a platform error.
 /// </summary>
 public sealed class ReconciliationPollerService(IServiceScopeFactory scopeFactory, IConfiguration configuration, ILogger<ReconciliationPollerService> logger) : BackgroundService
 {
-    private const string PipelineLabel = "sdlc-pipeline";
-    private static readonly Regex OriginMarker = new(@"<!--\s*sdlc-dashboard:spec=(?<path>\S+?)\s*-->", RegexOptions.Compiled);
-
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         var minutes = configuration.GetValue("Reconciliation:IntervalMinutes", 5);
@@ -43,39 +39,35 @@ public sealed class ReconciliationPollerService(IServiceScopeFactory scopeFactor
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
         var platform = scope.ServiceProvider.GetRequiredService<PlatformContentClient>();
 
-        var workspaces = await db.Workspaces
-            .Where(w => w.Status == WorkspaceStatus.Active && w.Platform == WorkspacePlatform.Github)
-            .ToListAsync(ct);
+        // Missing-pipeline-instance recovery is now a pure DB comparison (spec_publication vs
+        // pipeline_instance - see ReconcileMissingPipelineInstancesAsync), so unlike phase-drift
+        // recovery it isn't GitHub-specific and applies to every active workspace.
+        var workspaces = await db.Workspaces.Where(w => w.Status == WorkspaceStatus.Active).ToListAsync(ct);
 
         foreach (var workspace in workspaces)
         {
-            await ReconcileMissingPipelineInstancesAsync(db, platform, workspace, ct);
-            await ReconcilePhaseDriftAsync(db, platform, workspace, ct);
+            await ReconcileMissingPipelineInstancesAsync(db, workspace, ct);
+            if (workspace.Platform == WorkspacePlatform.Github)
+                await ReconcilePhaseDriftAsync(db, platform, workspace, ct);
         }
     }
 
-    private static async Task ReconcileMissingPipelineInstancesAsync(AppDbContext db, PlatformContentClient platform, Workspace workspace, CancellationToken ct)
+    /// <summary>
+    /// Recreates pipeline_instance rows for every spec_publication that doesn't have one yet - the
+    /// durable, backend-only record of a "Subir US" publish (SpecUsEndpoints.Handle) is the sole source
+    /// of truth here (Security review on PR #17): unlike a GitHub Issue's label or body, nothing
+    /// external can create a spec_publication row, so there's nothing here for an outside collaborator
+    /// to forge. No GitHub call, no pagination concern (QA review on PR #17) - just our own tables.
+    /// </summary>
+    private static async Task ReconcileMissingPipelineInstancesAsync(AppDbContext db, Workspace workspace, CancellationToken ct)
     {
-        var issues = await platform.ListLabeledIssuesAsync(workspace, PipelineLabel, ct);
-        if (issues is null) return; // platform call failed or unsupported - best-effort, try again next pass
+        var missing = await db.SpecPublications
+            .Where(p => p.WorkspaceId == workspace.Id)
+            .Where(p => !db.PipelineInstances.Any(pi => pi.WorkspaceId == p.WorkspaceId && pi.ExternalRef == p.ExternalRef))
+            .ToListAsync(ct);
 
-        foreach (var (number, body) in issues)
-        {
-            if (await db.PipelineInstances.AnyAsync(p => p.WorkspaceId == workspace.Id && p.ExternalRef == number, ct)) continue;
-
-            // Security review on PR #16: the "sdlc-pipeline" label alone isn't proof this Issue came
-            // from the "Subir US" flow - anyone with triage permission on the repo can apply a label to
-            // an arbitrary Issue. SpecUsEndpoints.Publish stamps an origin marker naming the spec it
-            // published from; only recreate the row if that marker is present *and* names a spec this
-            // workspace actually has, so a relabeled unrelated Issue is silently skipped instead of
-            // injecting pipeline state for it.
-            var specPath = OriginMarker.Match(body) is { Success: true } match ? match.Groups["path"].Value : null;
-            if (specPath is null) continue;
-            var spec = await db.Specs.SingleOrDefaultAsync(s => s.WorkspaceId == workspace.Id && s.Path == specPath, ct);
-            if (spec is null) continue;
-
-            await TryCreatePipelineInstanceAsync(db, workspace.Id, number, ct, spec.Id);
-        }
+        foreach (var publication in missing)
+            await TryCreatePipelineInstanceAsync(db, workspace.Id, publication.ExternalRef, ct, publication.SpecId);
     }
 
     internal static async Task TryCreatePipelineInstanceAsync(AppDbContext db, long workspaceId, string externalRef, CancellationToken ct, long? specId = null)

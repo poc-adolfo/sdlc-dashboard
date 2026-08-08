@@ -79,48 +79,6 @@ public sealed class PlatformContentClient(IHttpClientFactory clients, IConfigura
     public Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct) => clients.CreateClient("Platform").SendAsync(request, ct);
 
     /// <summary>
-    /// Lists (number, body) of every Issue carrying <paramref name="label"/>, GitHub only - used by
-    /// ReconciliationPollerService to find Issues created by "Subir US" (seção 5.3) whose local
-    /// pipeline_instance write never landed (seção 11). Azure DevOps returns null (not implemented).
-    /// </summary>
-    /// <remarks>
-    /// QA finding on PR #17: only the first <c>per_page=100</c> labeled Issues are fetched - no
-    /// pagination. Explicit decision: reconciliation only needs to recover Issues whose *local write
-    /// failed right after creation*, which self-heals every run (once the row exists, later runs skip
-    /// it via the WorkspaceId+ExternalRef check before this method is even relevant) - it does not need
-    /// to see every historical "sdlc-pipeline" Issue, only ones currently missing a row. A given
-    /// workspace accumulating over 100 *simultaneously missing* rows implies either a sustained outage
-    /// far past this app's other failure budgets or the label being reused outside "Subir US", both of
-    /// which need operator attention regardless of pagination. Revisit if/when a workspace's real usage
-    /// approaches that count.
-    /// </remarks>
-    public async Task<IReadOnlyList<(string Number, string Body)>?> ListLabeledIssuesAsync(Workspace workspace, string label, CancellationToken ct)
-    {
-        if (workspace.Platform != WorkspacePlatform.Github) return null;
-        try
-        {
-            using var request = new HttpRequestMessage(HttpMethod.Get, $"https://api.github.com/repos/{workspace.PlatformRef}/issues?labels={Uri.EscapeDataString(label)}&state=all&per_page=100");
-            AddAuth(request, workspace.Platform);
-            using var response = await clients.CreateClient("Platform").SendAsync(request, ct);
-            if (!response.IsSuccessStatusCode) return null;
-            using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
-            if (document.RootElement.ValueKind != JsonValueKind.Array) return null;
-
-            // GitHub's /issues endpoint also returns pull requests (they carry a "pull_request" key) - excluded.
-            return document.RootElement.EnumerateArray()
-                .Where(entry => !entry.TryGetProperty("pull_request", out _))
-                .Select(entry => (
-                    entry.GetProperty("number").GetInt64().ToString(),
-                    entry.TryGetProperty("body", out var b) && b.ValueKind == JsonValueKind.String ? b.GetString() ?? "" : ""))
-                .ToList();
-        }
-        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException)
-        {
-            return null;
-        }
-    }
-
-    /// <summary>
     /// Logins currently in "APPROVED" state on a GitHub PR - only the most recent review per reviewer
     /// counts (a later CHANGES_REQUESTED supersedes an earlier APPROVED from the same person). Used by
     /// ReconciliationPollerService to recover from a lost pull_request_review webhook. Azure DevOps

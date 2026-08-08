@@ -174,12 +174,13 @@ public sealed class SpecUsEndpointsIntegrationTests
     }
 
     [Fact]
-    public async Task GitHubPublishAppliesTheSdlcPipelineLabelAndAnOriginMarkerNamingTheFullSpecPath()
+    public async Task GitHubPublishAppliesTheSdlcPipelineLabelAndRecordsASpecPublication()
     {
-        // QA finding on PR #17: the reconciliation poller only recreates a pipeline_instance for an
-        // Issue that carries both the "sdlc-pipeline" label and an <!-- sdlc-dashboard:spec=... -->
-        // marker naming a real spec path (ReconciliationPollerServiceTests). This is the other half of
-        // that contract: what "Subir US" actually sends when creating the Issue.
+        // Security review on PR #17: ReconciliationPollerService no longer trusts anything read back
+        // from GitHub (an Issue's label/body are writable by any repo collaborator) - it trusts only a
+        // spec_publication row, which only this session-authenticated endpoint can create
+        // (ReconciliationPollerServiceTests). This is the other half of that contract: "Subir US" must
+        // actually write that row when it publishes.
         using var factory = new SpecUsApplicationFactory();
         factory.Handler.On(r => r.Method == HttpMethod.Get && r.RequestUri!.Host == "api.github.com" && r.RequestUri.AbsolutePath.Contains("/contents/"), _ => GitHubContentResponse(SpecMarkdown));
         factory.Handler.On(r => r.RequestUri!.Host == "analista.test", _ => AnalistaResponse(DorApproved));
@@ -195,8 +196,11 @@ public sealed class SpecUsEndpointsIntegrationTests
         var issuePayload = JsonDocument.Parse(issueCall.Body!).RootElement;
         var labels = issuePayload.GetProperty("labels").EnumerateArray().Select(x => x.GetString()).ToList();
         Assert.Contains("sdlc-pipeline", labels);
-        var issueBody = issuePayload.GetProperty("body").GetString()!;
-        Assert.Contains("<!-- sdlc-dashboard:spec=docs/spec.md -->", issueBody);
+
+        using var scope = factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var publication = Assert.Single(db.SpecPublications.Where(p => p.WorkspaceId == workspaceId));
+        Assert.Equal("42", publication.ExternalRef);
     }
 
     [Fact]
