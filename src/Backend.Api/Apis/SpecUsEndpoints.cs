@@ -41,7 +41,7 @@ public static class SpecUsEndpoints
         if (workspace.SpecsRepo is not null && !string.Equals(workspace.SpecsRepo, workspace.PlatformRef, StringComparison.OrdinalIgnoreCase))
             body += $"\n\n---\n\n<details>\n<summary>Spec completa: {specPath}</summary>\n\n```markdown\n{fetched}\n```\n\n</details>";
 
-        var external = await Publish(workspace, title, body, platform, ct);
+        var external = await Publish(workspace, title, body, fullPath, platform, ct);
         if (external is null) return Results.StatusCode(StatusCodes.Status502BadGateway);
 
         // Spec.Path in the index (SpecListingEndpoints) is always the full repo-relative path, same as
@@ -53,16 +53,24 @@ public static class SpecUsEndpoints
         return Results.Json(new { pipeline_instance = new PipelineInstanceResponse(pipeline.Id, pipeline.WorkspaceId, pipeline.SpecId, pipeline.FaseAtual.ToString(), pipeline.GateStatus.ToString(), pipeline.ExternalRef, pipeline.PrRef, pipeline.CreatedAt) }, statusCode: 201);
     }
 
-    private static async Task<string?> Publish(Workspace workspace, string title, string body, PlatformContentClient platform, CancellationToken ct)
+    private static async Task<string?> Publish(Workspace workspace, string title, string body, string specPath, PlatformContentClient platform, CancellationToken ct)
     {
         try
         {
             HttpRequestMessage request;
             if (workspace.Platform == WorkspacePlatform.Github)
             {
+                // The "sdlc-dashboard:spec=" marker and "sdlc-pipeline" label are how
+                // ReconciliationPollerService later recognizes an Issue as something this backend
+                // actually created (seção 6.2), not just any Issue a repo collaborator happens to label
+                // "sdlc-pipeline" themselves (Security review on PR #16). Reconciliation cross-checks
+                // the marker's spec path against the `spec` table before trusting it, so copying the
+                // marker text alone isn't enough to forge a pipeline instance unless it also names a
+                // spec this workspace actually has.
+                var markedBody = body + $"\n\n<!-- sdlc-dashboard:spec={specPath} -->";
                 request = new HttpRequestMessage(HttpMethod.Post, $"https://api.github.com/repos/{workspace.PlatformRef}/issues")
                 {
-                    Content = JsonContent.Create(new { title = "US: " + title, body })
+                    Content = JsonContent.Create(new { title = "US: " + title, body = markedBody, labels = new[] { "sdlc-pipeline" } })
                 };
             }
             else
