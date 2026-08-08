@@ -144,21 +144,23 @@ public sealed class WebhookEndpointsTests
         using var client = factory.CreateClient();
 
         for (var i = 0; i < 2; i++)
-            Assert.Equal(HttpStatusCode.NotFound, (await client.PostAsync("/webhooks/999999", new StringContent("{}"))).StatusCode);
+            Assert.Equal(HttpStatusCode.Unauthorized, (await client.PostAsync("/webhooks/999999", new StringContent("{}"))).StatusCode);
 
         var limited = await client.PostAsync("/webhooks/999999", new StringContent("{}"));
         Assert.Equal(HttpStatusCode.TooManyRequests, limited.StatusCode);
     }
 
     [Fact]
-    public async Task MissingWorkspaceReturnsNotFound()
+    public async Task MissingWorkspaceIsIndistinguishableFromAnInvalidSignature()
     {
+        // Security review on PR #15: a 404 here (vs. 401 for a bad signature on a real workspace)
+        // would let a caller enumerate valid workspace ids by response code alone.
         using var factory = new CredentialApplicationFactory();
         using var client = factory.CreateClient();
 
         var response = await client.PostAsync("/webhooks/999999", new StringContent("{}"));
 
-        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
     }
 
     [Fact]
