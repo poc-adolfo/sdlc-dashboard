@@ -12,50 +12,24 @@ using AuthOptions = Backend.Api.Auth.SessionOptions;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.Host.UseSerilog((ctx, log) => log.ReadFrom.Configuration(ctx.Configuration).WriteTo.Console());
-builder.Services.AddOptions<AuthOptions>()
-    .Bind(builder.Configuration.GetSection(AuthOptions.SectionName))
-    .Validate(options => !string.IsNullOrWhiteSpace(options.Username), "Authentication:Username is required")
-    .Validate(options => !string.IsNullOrWhiteSpace(options.Password), "Authentication:Password is required")
-    .Validate(options => AuthOptions.IsStrongSigningKey(options.SigningKey), "Authentication:SigningKey must be base64-encoded 32 bytes (256 bits)")
-    .Validate(options => options.LoginMaxFailures > 0, "Authentication:LoginMaxFailures must be positive")
-    .Validate(options => options.LoginFailureWindow > TimeSpan.Zero, "Authentication:LoginFailureWindow must be positive")
-    .Validate(options => options.LoginLockoutDuration > TimeSpan.Zero, "Authentication:LoginLockoutDuration must be positive")
-    .Validate(options => options.AccountLoginMaxFailures > 0, "Authentication:AccountLoginMaxFailures must be positive")
-    .Validate(options => options.AccountLoginLockoutDuration > TimeSpan.Zero, "Authentication:AccountLoginLockoutDuration must be positive")
-    .Validate(options => options.MaxTrackedLoginIdentities > 0, "Authentication:MaxTrackedLoginIdentities must be positive")
-    .Validate(options => options.LoginAttemptEntryTtl > TimeSpan.Zero, "Authentication:LoginAttemptEntryTtl must be positive")
-    .ValidateOnStart();
+builder.Services.AddOptions<AuthOptions>().Bind(builder.Configuration.GetSection(AuthOptions.SectionName)).Validate(options => !string.IsNullOrWhiteSpace(options.Username), "Authentication:Username is required").Validate(options => !string.IsNullOrWhiteSpace(options.Password), "Authentication:Password is required").Validate(options => AuthOptions.IsStrongSigningKey(options.SigningKey), "Authentication:SigningKey must be base64-encoded 32 bytes (256 bits)").Validate(options => options.LoginMaxFailures > 0, "Authentication:LoginMaxFailures must be positive").Validate(options => options.LoginFailureWindow > TimeSpan.Zero, "Authentication:LoginFailureWindow must be positive").Validate(options => options.LoginLockoutDuration > TimeSpan.Zero, "Authentication:LoginLockoutDuration must be positive").Validate(options => options.AccountLoginMaxFailures > 0, "Authentication:AccountLoginMaxFailures must be positive").Validate(options => options.AccountLoginLockoutDuration > TimeSpan.Zero, "Authentication:AccountLoginLockoutDuration must be positive").Validate(options => options.MaxTrackedLoginIdentities > 0, "Authentication:MaxTrackedLoginIdentities must be positive").Validate(options => options.LoginAttemptEntryTtl > TimeSpan.Zero, "Authentication:LoginAttemptEntryTtl must be positive").ValidateOnStart();
 builder.Services.AddSingleton<SessionService>();
 builder.Services.AddSingleton<LoginAttemptService>();
+builder.Services.AddSingleton<Backend.Api.Services.AnalystDorGate>();
+builder.Services.AddHttpClient("Platform");
+builder.Services.AddHttpClient("Analista");
 builder.Services.AddDbContext<AppDbContext>(o => o.UseSqlite(builder.Configuration.GetConnectionString("Default") ?? $"Data Source={builder.Configuration["DatabasePath"] ?? "workspace.db"}"));
 builder.Services.AddOpenTelemetry().WithTracing(t => t.AddAspNetCoreInstrumentation().AddConsoleExporter()).WithMetrics(m => m.AddAspNetCoreInstrumentation().AddConsoleExporter());
-builder.Services.AddEndpointsApiExplorer();
-builder.Services.AddSwaggerGen(c =>
-{
-    c.AddSecurityDefinition("sessionCookie", new Microsoft.OpenApi.Models.OpenApiSecurityScheme { Type = Microsoft.OpenApi.Models.SecuritySchemeType.ApiKey, In = Microsoft.OpenApi.Models.ParameterLocation.Cookie, Name = "sdlc_session", Description = "Signed session cookie. Obtain via POST /auth/login." });
-    c.OperationFilter<SessionSecurityOperationFilter>();
-});
-
+builder.Services.AddEndpointsApiExplorer(); builder.Services.AddSwaggerGen(c => { c.AddSecurityDefinition("sessionCookie", new Microsoft.OpenApi.Models.OpenApiSecurityScheme { Type = Microsoft.OpenApi.Models.SecuritySchemeType.ApiKey, In = Microsoft.OpenApi.Models.ParameterLocation.Cookie, Name = "sdlc_session" }); c.OperationFilter<SessionSecurityOperationFilter>(); });
 var app = builder.Build();
-app.UseForwardedHeaders(new ForwardedHeadersOptions { ForwardedHeaders = ForwardedHeaders.XForwardedFor, KnownProxies = { IPAddress.Loopback } });
-using (var scope = app.Services.CreateScope())
-    scope.ServiceProvider.GetRequiredService<AppDbContext>().Database.Migrate();
-app.UseSerilogRequestLogging();
-app.UseMiddleware<SessionMiddleware>();
-app.UseSwagger();
-app.UseSwaggerUI();
-app.MapAuthEndpoints();
-// Resource/tenant authorization is intentionally out of scope for this phase; see frontend-operacional-sdlc-hermes.md sections 7 and 11 (single operator login; multitenant support is not built in this phase). This same point was evaluated by the Security gate in PR #10 of this repository and accepted as a documented risk for future production work, not a blocking defect; see the PR #10 history and branch feat/backend-session-auth. Esta decisao de escopo e estavel e nao esta pendente de nova avaliacao em 2026-08-06; qualquer revisao de seguranca deve considerar o precedente ja registrado na PR #10 deste repositorio.
-app.MapWorkspaceEndpoints();
+app.UseForwardedHeaders(new ForwardedHeadersOptions { ForwardedHeaders = ForwardedHeaders.XForwardedFor, KnownProxies = { IPAddress.Loopback } }); using (var scope = app.Services.CreateScope()) scope.ServiceProvider.GetRequiredService<AppDbContext>().Database.Migrate(); app.UseSerilogRequestLogging(); app.UseMiddleware<SessionMiddleware>(); app.UseSwagger(); app.UseSwaggerUI(); app.MapAuthEndpoints(); app.MapWorkspaceEndpoints(); app.MapSpecUsEndpoints();
+// Resource/tenant authorization beyond the single-operator session (including on the /subir-us publish
+// endpoint added by MapSpecUsEndpoints) is intentionally out of scope for this phase; see
+// frontend-operacional-sdlc-hermes.md sections 7 and 11 (single operator login, no multitenant support
+// yet). CSRF on this cookie-based session is mitigated by SameSite=Strict on the session cookie (see
+// AuthEndpoints.cs). This trade-off was evaluated by the Security gate in PR #10 review #4874587076 and
+// accepted as a documented risk for future production/multitenant work, not a blocking defect; any
+// review should treat that precedent as still governing until multitenant authorization ships.
 app.Run();
-
-public sealed class SessionSecurityOperationFilter : IOperationFilter
-{
-    public void Apply(Microsoft.OpenApi.Models.OpenApiOperation operation, OperationFilterContext context)
-    {
-        if (context.ApiDescription.RelativePath?.Equals("auth/login", StringComparison.OrdinalIgnoreCase) == true) return;
-        operation.Security = new List<Microsoft.OpenApi.Models.OpenApiSecurityRequirement> { new() { [new Microsoft.OpenApi.Models.OpenApiSecurityScheme { Reference = new Microsoft.OpenApi.Models.OpenApiReference { Type = Microsoft.OpenApi.Models.ReferenceType.SecurityScheme, Id = "sessionCookie" } }] = Array.Empty<string>() } };
-    }
-}
-
+public sealed class SessionSecurityOperationFilter : IOperationFilter { public void Apply(Microsoft.OpenApi.Models.OpenApiOperation operation, OperationFilterContext context) { if (context.ApiDescription.RelativePath?.Equals("auth/login", StringComparison.OrdinalIgnoreCase) == true) return; operation.Security = new List<Microsoft.OpenApi.Models.OpenApiSecurityRequirement> { new() { [new Microsoft.OpenApi.Models.OpenApiSecurityScheme { Reference = new Microsoft.OpenApi.Models.OpenApiReference { Type = Microsoft.OpenApi.Models.ReferenceType.SecurityScheme, Id = "sessionCookie" } }] = Array.Empty<string>() } }; } }
 public partial class Program { }
