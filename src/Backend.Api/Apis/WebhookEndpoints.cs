@@ -34,22 +34,34 @@ public static class WebhookEndpoints
         var body = await reader.ReadToEndAsync(ct);
         var logger = loggerFactory.CreateLogger("WebhookEndpoints");
 
-        if (workspace.Platform == WorkspacePlatform.Github)
+        try
         {
-            if (!await VerifyGitHubSignatureAsync(workspace, request, body, secrets, ct)) return Results.Unauthorized();
-            var deliveryId = request.Headers["X-GitHub-Delivery"].FirstOrDefault();
-            var eventType = request.Headers["X-GitHub-Event"].FirstOrDefault() ?? "";
-            await ProcessGitHubEventAsync(db, workspace, eventType, body, deliveryId, logger, ct);
+            if (workspace.Platform == WorkspacePlatform.Github)
+            {
+                if (!await VerifyGitHubSignatureAsync(workspace, request, body, secrets, ct)) return Results.Unauthorized();
+                var deliveryId = request.Headers["X-GitHub-Delivery"].FirstOrDefault();
+                var eventType = request.Headers["X-GitHub-Event"].FirstOrDefault() ?? "";
+                await ProcessGitHubEventAsync(db, workspace, eventType, body, deliveryId, logger, ct);
+            }
+            else
+            {
+                if (!await VerifyAdoBasicAuthAsync(workspace, request, secrets, ct)) return Results.Unauthorized();
+                // Azure DevOps Service Hook event bodies (git.pullrequest.*) aren't mapped to phase
+                // transitions yet - only GitHub's pull_request/pull_request_review shapes are (these
+                // match the mechanism already validated in production, piloto-perfis-dev-revisor.md
+                // seção 14.2). Authentication and delivery-id extraction still run so the endpoint acks
+                // correctly either way; mapping ADO's event shapes is a documented follow-up, not
+                // silently ignored.
+                logger.LogInformation("Azure DevOps webhook received for workspace {WorkspaceId} but event-to-phase mapping isn't implemented yet; acking without a phase_transition", workspaceId);
+            }
         }
-        else
+        catch (Exception ex) when (ex is not (OutOfMemoryException or StackOverflowException))
         {
-            if (!await VerifyAdoBasicAuthAsync(workspace, request, secrets, ct)) return Results.Unauthorized();
-            // Azure DevOps Service Hook event bodies (git.pullrequest.*) aren't mapped to phase
-            // transitions yet - only GitHub's pull_request/pull_request_review shapes are (these match
-            // the mechanism already validated in production, piloto-perfis-dev-revisor.md seção 14.2).
-            // Authentication and delivery-id extraction still run so the endpoint acks correctly either
-            // way; mapping ADO's event shapes is a documented follow-up, not silently ignored.
-            logger.LogInformation("Azure DevOps webhook received for workspace {WorkspaceId} but event-to-phase mapping isn't implemented yet; acking without a phase_transition", workspaceId);
+            // A genuine persistence failure here (not the benign dedup race AdvancePhaseAsync already
+            // absorbs) must not become a 202: GitHub/Azure DevOps only retry non-2xx responses, so
+            // acking a webhook whose phase_transition never actually got written would silently drop it.
+            logger.LogError(ex, "Failed to process webhook for workspace {WorkspaceId}", workspaceId);
+            return Results.StatusCode(StatusCodes.Status500InternalServerError);
         }
 
         return Results.StatusCode(StatusCodes.Status202Accepted);
@@ -211,8 +223,13 @@ public static class WebhookEndpoints
         }
         catch (DbUpdateException)
         {
-            // Lost a race with a concurrent duplicate delivery of the same event to the unique
-            // (PipelineInstanceId, DeliveryId) index - the other request already recorded it.
+            // Only treat this as the expected dedup race if a transition for this exact delivery now
+            // exists - confirmed, not assumed. A DbUpdateException for any other reason (FK violation,
+            // connection lost, unrelated constraint, ...) must not be swallowed as if it were that race:
+            // rethrow so Receive() turns it into a 500 and GitHub/Azure DevOps retries the delivery,
+            // instead of the caller believing a 202 that was never really true.
+            if (deliveryId is null || !await db.PhaseTransitions.AnyAsync(t => t.PipelineInstanceId == pipeline.Id && t.DeliveryId == deliveryId, ct))
+                throw;
         }
     }
 }
