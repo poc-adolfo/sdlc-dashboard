@@ -4,6 +4,9 @@ Frontend operacional do pipeline SDLC Hermes. Ver spec em `sdlc-agentico/specs/f
 
 Stack: React (mobile-first) + .NET 8.
 
+- Backend: `Backend.sln` (`src/Backend.Api`, `src/Backend.Persistence`) - see `dotnet build`/`dotnet test` in `.github/workflows/backend-ci.yml`.
+- Frontend: `frontend/` - see `frontend/README.md`.
+
 
 ## Production authentication secrets
 
