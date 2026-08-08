@@ -186,7 +186,8 @@ public static class WebhookEndpoints
     internal static string? ExtractClosesReference(string body) =>
         ClosesReferenceRegex.Match(body ?? "") is { Success: true } match ? match.Groups[1].Value : null;
 
-    private static async Task AdvancePhaseAsync(AppDbContext db, PipelineInstance pipeline, PipelinePhase target, string sourceEvent, string? deliveryId, CancellationToken ct, string? setPrRef = null)
+    /// <summary>Also reused by ReconciliationPollerService, which calls this with deliveryId: null (poller-sourced transitions have no webhook delivery to dedup against, seção 6.2/10 - the phase-ordering guard below is what makes reconciliation passes safe to repeat).</summary>
+    internal static async Task AdvancePhaseAsync(AppDbContext db, PipelineInstance pipeline, PipelinePhase target, string sourceEvent, string? deliveryId, CancellationToken ct, string? setPrRef = null)
     {
         // Primary dedup guard (seção 10.1/6.2): the platform's own delivery id. A double/quadruple-fired
         // webhook for the same logical event must never produce a second row.

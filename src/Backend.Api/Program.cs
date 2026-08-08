@@ -24,6 +24,11 @@ builder.Services.AddSingleton<LoginAttemptService>();
 builder.Services.AddSingleton<Backend.Api.Services.AnalystDorGate>();
 builder.Services.AddSingleton<Backend.Api.Services.PlatformContentClient>();
 builder.Services.AddSingleton<Backend.Api.Services.ISecretStore, Backend.Api.Services.KubernetesSecretStore>();
+// Skipped in Testing: WebApplicationFactory-based tests construct ReconciliationPollerService directly
+// and call RunOnceAsync deterministically instead of relying on its internal timer, so the automatic
+// hosted-service loop would only add unwanted background platform calls during the test run.
+if (!builder.Environment.IsEnvironment("Testing"))
+    builder.Services.AddHostedService<Backend.Api.Services.ReconciliationPollerService>();
 builder.Services.AddHttpClient("Platform");
 // Analista:ApiServerBaseUrl is deployment-controlled configuration. It is never accepted from HTTP input;
 // operators must restrict it to an approved internal Analista service (and protect its egress/network path).
