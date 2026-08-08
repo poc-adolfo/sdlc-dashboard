@@ -12,14 +12,27 @@ namespace Backend.Api.Tests;
 
 public sealed class FakeSecretStore : ISecretStore
 {
-    public List<(string Key, string Value)> Stored { get; } = new();
+    // ConcurrentBag, not List: concurrency tests fire several requests in parallel, and each hits this
+    // fake from a different request thread - a plain List's Add is not thread-safe and silently drops
+    // entries under real concurrent access, which previously showed up as flaky off-by-one failures
+    // that had nothing to do with the production code under test.
+    public System.Collections.Concurrent.ConcurrentBag<(string Key, string Value)> Stored { get; } = new();
+    public System.Collections.Concurrent.ConcurrentBag<string> Deleted { get; } = new();
     public bool ShouldFail { get; set; }
+    public bool ShouldFailDelete { get; set; }
 
     public Task<string> StoreAsync(string key, string value, CancellationToken ct)
     {
         if (ShouldFail) throw new InvalidOperationException("secret store unavailable");
         Stored.Add((key, value));
         return Task.FromResult($"{key}/value");
+    }
+
+    public Task DeleteAsync(string reference, CancellationToken ct)
+    {
+        if (ShouldFailDelete) throw new InvalidOperationException("secret store delete unavailable");
+        Deleted.Add(reference);
+        return Task.CompletedTask;
     }
 }
 
@@ -93,8 +106,8 @@ public sealed class CredentialEndpointsTests
         Assert.Equal("recolocarme-web", body.GetProperty("platformUsername").GetString());
         Assert.False(string.IsNullOrWhiteSpace(body.GetProperty("secretRef").GetString()));
 
-        Assert.Single(factory.Secrets.Stored);
-        Assert.Equal("super-secret-token", factory.Secrets.Stored[0].Value);
+        var stored = Assert.Single(factory.Secrets.Stored);
+        Assert.Equal("super-secret-token", stored.Value);
     }
 
     [Fact]
@@ -202,22 +215,25 @@ public sealed class CredentialEndpointsTests
     {
         // Security finding on PR #14: the read-check-then-revoke-then-insert in Create had no DB-level
         // guarantee, so two concurrent registrations for the same (workspace, perfil) could both leave
-        // an "active" row. This doesn't assert a fixed pair of response codes (racing HTTP requests
+        // an "active" row. This doesn't assert a fixed pattern of response codes (racing HTTP requests
         // against a single SQLite file will not reliably land on one specific interleaving) - it
-        // asserts the invariant the fix actually has to hold regardless of how the race resolves: at
-        // most one active row, and every request either succeeded or was rejected, never silently lost.
+        // asserts the invariants that must hold regardless of how the race resolves: at most one active
+        // row, every request either succeeded or was rejected (never silently lost), and every secret
+        // this test's FakeSecretStore actually stored is either referenced by a surviving row or was
+        // cleaned up via DeleteAsync when its DB write lost the race (the orphaned-secret finding from
+        // the same review) - five requests, not two, to give the race more chances to actually occur.
         using var factory = new CredentialApplicationFactory();
         using var client = await AuthenticatedClient(factory);
         var workspaceId = await CreateWorkspace(client);
 
-        var responses = await Task.WhenAll(
-            client.PostAsJsonAsync($"/workspaces/{workspaceId}/credenciais", new { perfil = "dev", platform_username = "racer-a", token = "token-a" }),
-            client.PostAsJsonAsync($"/workspaces/{workspaceId}/credenciais", new { perfil = "dev", platform_username = "racer-b", token = "token-b" }));
+        var responses = await Task.WhenAll(Enumerable.Range(0, 5).Select(i =>
+            client.PostAsJsonAsync($"/workspaces/{workspaceId}/credenciais", new { perfil = "dev", platform_username = $"racer-{i}", token = $"token-{i}" })));
 
         Assert.All(responses, r => Assert.True(r.StatusCode is HttpStatusCode.Created or HttpStatusCode.Conflict, $"unexpected status {r.StatusCode}"));
 
         var list = await (await client.GetAsync($"/workspaces/{workspaceId}/credenciais")).Content.ReadFromJsonAsync<JsonElement>();
-        var activeCount = list.EnumerateArray().Count(item => item.GetProperty("status").GetString() == "active");
-        Assert.Equal(1, activeCount);
+        var items = list.EnumerateArray().ToList();
+        Assert.Equal(1, items.Count(item => item.GetProperty("status").GetString() == "active"));
+        Assert.Equal(factory.Secrets.Stored.Count, factory.Secrets.Deleted.Count + items.Count);
     }
 }

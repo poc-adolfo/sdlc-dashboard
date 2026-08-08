@@ -31,17 +31,21 @@ public sealed class KubernetesSecretStoreTests
         }
     }
 
-    private static IConfiguration Configuration() => new ConfigurationBuilder()
-        .AddInMemoryCollection(new Dictionary<string, string?> { ["Kubernetes:Namespace"] = "sdlc" })
+    private static IConfiguration Configuration(bool allowFallback = false) => new ConfigurationBuilder()
+        .AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["Kubernetes:Namespace"] = "sdlc",
+            ["Kubernetes:AllowKubeconfigFallback"] = allowFallback ? "true" : "false"
+        })
         .Build();
 
     [Theory]
     [InlineData("Development")]
     [InlineData("Testing")]
-    public async Task DevelopmentAndTestingFallBackToTheDefaultKubeconfigAndLogAWarning(string environmentName)
+    public async Task DevelopmentAndTestingFallBackOnlyWithExplicitOptInAndLogAWarning(string environmentName)
     {
         var logger = new RecordingLogger();
-        var store = new KubernetesSecretStore(Configuration(), new FakeEnvironment(environmentName), logger);
+        var store = new KubernetesSecretStore(Configuration(allowFallback: true), new FakeEnvironment(environmentName), logger);
 
         // Outside a real cluster InClusterConfig() always fails, so the fallback attempt also fails
         // here (no kubeconfig present in this environment either) - what this proves is that the
@@ -50,14 +54,30 @@ public sealed class KubernetesSecretStoreTests
         Assert.Contains(logger.Warnings, w => w.Contains("falling back", StringComparison.OrdinalIgnoreCase));
     }
 
+    [Theory]
+    [InlineData("Development")]
+    [InlineData("Testing")]
+    public async Task DevelopmentAndTestingFailClosedWithoutTheOptInEvenThoughEligible(string environmentName)
+    {
+        // A misconfigured deployment that ends up with ASPNETCORE_ENVIRONMENT=Development/Testing must
+        // not silently gain kubeconfig-fallback behavior just by being in an eligible environment - the
+        // opt-in (Kubernetes:AllowKubeconfigFallback) has to be set explicitly too.
+        var logger = new RecordingLogger();
+        var store = new KubernetesSecretStore(Configuration(allowFallback: false), new FakeEnvironment(environmentName), logger);
+
+        await Assert.ThrowsAnyAsync<Exception>(() => store.StoreAsync("key", "value", CancellationToken.None));
+        Assert.Empty(logger.Warnings);
+    }
+
     [Fact]
-    public async Task ProductionFailsClosedWithoutFallingBackToADefaultKubeconfig()
+    public async Task ProductionFailsClosedWithoutFallingBackEvenWithTheOptInSet()
     {
         // Security finding on PR #14: falling back to BuildDefaultConfig() outside Development/Testing
         // could load whatever kubeconfig happens to be on the process's environment and write tokens to
-        // an unreviewed cluster/context. Production must fail on InClusterConfig() alone.
+        // an unreviewed cluster/context. Production must fail on InClusterConfig() alone, regardless of
+        // the Development/Testing-scoped opt-in.
         var logger = new RecordingLogger();
-        var store = new KubernetesSecretStore(Configuration(), new FakeEnvironment("Production"), logger);
+        var store = new KubernetesSecretStore(Configuration(allowFallback: true), new FakeEnvironment("Production"), logger);
 
         await Assert.ThrowsAnyAsync<Exception>(() => store.StoreAsync("key", "value", CancellationToken.None));
         Assert.Empty(logger.Warnings);

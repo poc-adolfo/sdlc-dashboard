@@ -15,7 +15,7 @@ public static class CredentialEndpoints
         return app;
     }
 
-    private static async Task<IResult> Create(long id, CreateCredentialRequest? request, AppDbContext db, ISecretStore secrets, CancellationToken ct)
+    private static async Task<IResult> Create(long id, CreateCredentialRequest? request, AppDbContext db, ISecretStore secrets, ILoggerFactory loggerFactory, CancellationToken ct)
     {
         var errors = Validate(request);
         if (errors.Count > 0) return Results.UnprocessableEntity(new { errors });
@@ -74,8 +74,22 @@ public static class CredentialEndpoints
 
             return Results.Created($"/workspaces/{id}/credenciais/{credential.Id}", Response(credential));
         }
-        catch (DbUpdateException)
+        catch (DbUpdateException ex)
         {
+            // Compensation: the Secret write already succeeded (secretRef is real) but nothing in the
+            // DB ended up pointing at it - without this, a valid token sits abandoned in the cluster.
+            // Best-effort: if the delete itself fails, log it (so it's visible for manual cleanup) but
+            // still report the original conflict to the caller, not the cleanup failure.
+            try
+            {
+                await secrets.DeleteAsync(secretRef, ct);
+            }
+            catch (Exception cleanupEx)
+            {
+                loggerFactory.CreateLogger("CredentialEndpoints").LogError(cleanupEx,
+                    "Failed to clean up orphaned secret {SecretRef} for workspace {WorkspaceId} perfil {Perfil} after DbUpdateException {DbError}",
+                    secretRef, id, perfil, ex.Message);
+            }
             return Results.Conflict(new { error = "a credential for this perfil was registered concurrently; retry" });
         }
     }
