@@ -47,6 +47,7 @@ public static class CredentialEndpoints
         // writer; SQLite serializes the two transactions, and the second one's SaveChanges throws
         // DbUpdateException on the constraint, which is reported as 409 below.
         await using var transaction = await db.Database.BeginTransactionAsync(ct);
+        PerfilCredential credential;
         try
         {
             var previousActive = await db.PerfilCredentials
@@ -58,7 +59,7 @@ public static class CredentialEndpoints
                 previous.RotatedAt = now;
             }
 
-            var credential = new PerfilCredential
+            credential = new PerfilCredential
             {
                 WorkspaceId = id,
                 Perfil = perfil,
@@ -70,27 +71,53 @@ public static class CredentialEndpoints
             };
             db.PerfilCredentials.Add(credential);
             await db.SaveChangesAsync(ct);
-            await transaction.CommitAsync(ct);
-
-            return Results.Created($"/workspaces/{id}/credenciais/{credential.Id}", Response(credential));
         }
-        catch (DbUpdateException ex)
+        catch (Exception ex) when (ex is not (OutOfMemoryException or StackOverflowException))
         {
-            // Compensation: the Secret write already succeeded (secretRef is real) but nothing in the
-            // DB ended up pointing at it - without this, a valid token sits abandoned in the cluster.
-            // Best-effort: if the delete itself fails, log it (so it's visible for manual cleanup) but
-            // still report the original conflict to the caller, not the cleanup failure.
-            try
-            {
-                await secrets.DeleteAsync(secretRef, ct);
-            }
-            catch (Exception cleanupEx)
-            {
-                loggerFactory.CreateLogger("CredentialEndpoints").LogError(cleanupEx,
-                    "Failed to clean up orphaned secret {SecretRef} for workspace {WorkspaceId} perfil {Perfil} after DbUpdateException {DbError}",
-                    secretRef, id, perfil, ex.Message);
-            }
-            return Results.Conflict(new { error = "a credential for this perfil was registered concurrently; retry" });
+            // Unambiguous: CommitAsync was never reached, so no row referencing secretRef can possibly
+            // exist yet - safe to compensate regardless of which exception this was (constraint
+            // violation, cancellation, connection loss before commit, ...), not just DbUpdateException.
+            await TryCleanupOrphanedSecretAsync(secrets, secretRef, id, perfil, ex, loggerFactory.CreateLogger("CredentialEndpoints"), ct);
+            return ex is DbUpdateException
+                ? Results.Conflict(new { error = "a credential for this perfil was registered concurrently; retry" })
+                : Results.StatusCode(StatusCodes.Status502BadGateway);
+        }
+
+        try
+        {
+            await transaction.CommitAsync(ct);
+        }
+        catch (Exception ex) when (ex is not (OutOfMemoryException or StackOverflowException))
+        {
+            // Ambiguous, deliberately NOT cleaned up: SaveChangesAsync succeeded, but this exception
+            // means we don't know whether COMMIT itself actually reached and applied before it surfaced.
+            // Deleting the secret here risks orphaning the row the other way instead (a committed
+            // PerfilCredential pointing at a now-deleted Secret, which is worse - the row would look
+            // valid but the token behind it would be gone). Left for a future reconciliation pass,
+            // same "external/DB write partially failed" philosophy already accepted for Issue/
+            // pipeline_instance correlation (seção 11) rather than risking that swap.
+            loggerFactory.CreateLogger("CredentialEndpoints").LogError(ex,
+                "Commit failed after SaveChanges for workspace {WorkspaceId} perfil {Perfil}; secret {SecretRef} left as-is because the commit outcome is ambiguous",
+                id, perfil, secretRef);
+            return Results.StatusCode(StatusCodes.Status502BadGateway);
+        }
+
+        return Results.Created($"/workspaces/{id}/credenciais/{credential.Id}", Response(credential));
+    }
+
+    internal static async Task TryCleanupOrphanedSecretAsync(ISecretStore secrets, string secretRef, long workspaceId, Perfil perfil, Exception cause, ILogger logger, CancellationToken ct)
+    {
+        // Best-effort: a cleanup failure must not override the original error being reported to the
+        // caller, just be visible for manual follow-up.
+        try
+        {
+            await secrets.DeleteAsync(secretRef, ct);
+        }
+        catch (Exception cleanupEx)
+        {
+            logger.LogError(cleanupEx,
+                "Failed to clean up orphaned secret {SecretRef} for workspace {WorkspaceId} perfil {Perfil} after {Cause}",
+                secretRef, workspaceId, perfil, cause.Message);
         }
     }
 

@@ -1,12 +1,15 @@
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
+using Backend.Api.Apis;
 using Backend.Api.Services;
+using Backend.Persistence.Domain;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Backend.Api.Tests;
 
@@ -235,5 +238,32 @@ public sealed class CredentialEndpointsTests
         var items = list.EnumerateArray().ToList();
         Assert.Equal(1, items.Count(item => item.GetProperty("status").GetString() == "active"));
         Assert.Equal(factory.Secrets.Stored.Count, factory.Secrets.Deleted.Count + items.Count);
+    }
+
+    [Fact]
+    public async Task CleanupHelperDeletesTheSecretForAnyFailureCauseNotJustDbUpdateException()
+    {
+        // Revisor finding on PR #14: the compensating cleanup only ran in the DbUpdateException catch,
+        // so any other failure between StoreAsync and CommitAsync (cancellation, connection loss, ...)
+        // would leave the secret orphaned too. Exercises the extracted helper directly with a generic
+        // cause, which is the part an HTTP-level test can't reliably force on demand.
+        var store = new FakeSecretStore();
+        var cause = new InvalidOperationException("simulated non-DbUpdateException failure");
+
+        await CredentialEndpoints.TryCleanupOrphanedSecretAsync(store, "ref-a/value", 1, Perfil.Dev, cause, NullLogger.Instance, CancellationToken.None);
+
+        Assert.Contains("ref-a/value", store.Deleted);
+    }
+
+    [Fact]
+    public async Task CleanupHelperSwallowsItsOwnFailureInsteadOfThrowing()
+    {
+        var store = new FakeSecretStore { ShouldFailDelete = true };
+        var cause = new InvalidOperationException("simulated failure");
+
+        var ex = await Record.ExceptionAsync(() =>
+            CredentialEndpoints.TryCleanupOrphanedSecretAsync(store, "ref-b/value", 1, Perfil.Dev, cause, NullLogger.Instance, CancellationToken.None));
+
+        Assert.Null(ex);
     }
 }
