@@ -59,6 +59,7 @@ public sealed class SpecUsApplicationFactory : WebApplicationFactory<Program>
             ["Authentication:SecureCookie"] = "false",
             ["ConnectionStrings:Default"] = $"Data Source={_databasePath}",
             ["Analista:ApiServerBaseUrl"] = AnalistaBaseUrl,
+            ["Analista:AllowedHost"] = "analista.test",
             ["GitHub:AppToken"] = "test-token",
             ["AzureDevOps:AppToken"] = "test-token"
         }));

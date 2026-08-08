@@ -27,6 +27,7 @@ public sealed class AssessmentApiFactory : WebApplicationFactory<Program>
             ["Authentication:Username"]="operator", ["Authentication:Password"] = TestPassword,
             ["Authentication:SigningKey"] = TestSigningKey, ["Authentication:SecureCookie"]="false",
             ["ConnectionStrings:Default"]=$"Data Source={path}", ["Analista:ApiServerBaseUrl"]="https://analista.test",
+            ["Analista:AllowedHost"]="analista.test",
             ["Analista:ApiServerApiKey"] = ApiKey, ["Analista:TimeoutSeconds"] = "1" }))
         .ConfigureServices(s => s.AddHttpClient("Analista").ConfigurePrimaryHttpMessageHandler(() => Handler));
     protected override void ConfigureClient(HttpClient client) => client.DefaultRequestHeaders.Add("Cookie", "sdlc_session=" + Services.GetRequiredService<SessionService>().Create("operator", DateTimeOffset.UtcNow));

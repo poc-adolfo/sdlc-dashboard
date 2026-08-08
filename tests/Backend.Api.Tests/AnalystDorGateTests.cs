@@ -36,6 +36,35 @@ public sealed class AnalystDorGateTests
 
         Assert.Null(result);
     }
+
+    [Fact]
+    public async Task HttpsUrlWithHostOutsideTheAllowlistIsRejectedWithoutMakingARequest()
+    {
+        // A misconfigured or compromised Analista:ApiServerBaseUrl could otherwise point an https://
+        // URL at any attacker-controlled host and still pass the HTTPS-only check; AllowedHost pins
+        // the exact expected host as a second, independently-configured guard.
+        var config = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?> { ["Analista:ApiServerBaseUrl"] = "https://attacker.example", ["Analista:AllowedHost"] = "analista.internal" })
+            .Build();
+        var gate = new AnalystDorGate(new UnusedHttpClientFactory(), config, NullLogger<AnalystDorGate>.Instance);
+
+        var result = await gate.CheckAsync("conteudo", CancellationToken.None);
+
+        Assert.Null(result);
+    }
+
+    [Fact]
+    public async Task MissingAllowedHostConfigurationRejectsEvenAValidHttpsUrl()
+    {
+        var config = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?> { ["Analista:ApiServerBaseUrl"] = "https://analista.internal" })
+            .Build();
+        var gate = new AnalystDorGate(new UnusedHttpClientFactory(), config, NullLogger<AnalystDorGate>.Instance);
+
+        var result = await gate.CheckAsync("conteudo", CancellationToken.None);
+
+        Assert.Null(result);
+    }
 }
 
 public sealed class AnalystDorGateParseTests

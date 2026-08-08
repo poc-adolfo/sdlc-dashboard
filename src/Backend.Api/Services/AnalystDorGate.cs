@@ -21,6 +21,16 @@ public sealed class AnalystDorGate(IHttpClientFactory clients, IConfiguration co
             logger.LogError("Analista:ApiServerBaseUrl must be an absolute https URL");
             return null;
         }
+        var allowedHost = configuration["Analista:AllowedHost"];
+        if (string.IsNullOrWhiteSpace(allowedHost) || !string.Equals(parsedBaseUrl.Host, allowedHost, StringComparison.OrdinalIgnoreCase))
+        {
+            // A second, independently-configured check: HTTPS alone doesn't stop a misconfigured or
+            // compromised ApiServerBaseUrl from pointing the full spec/assessment content and bearer
+            // key at an attacker-controlled HTTPS host. Analista:AllowedHost pins the exact expected
+            // host so that error alone must also be reproduced in a second config key.
+            logger.LogError("Analista:ApiServerBaseUrl host {Host} does not match the configured Analista:AllowedHost", parsedBaseUrl.Host);
+            return null;
+        }
 
         try
         {
