@@ -54,7 +54,7 @@ public sealed class AnalystDorGate(IHttpClientFactory clients, IConfiguration co
             {
                 using var d = JsonDocument.Parse(text[start..end]);
                 var r = d.RootElement;
-                if (!r.TryGetProperty("dor_atendido", out var a) || !r.TryGetProperty("pendencias", out var p) || p.ValueKind != JsonValueKind.Array)
+                if (!r.TryGetProperty("dor_atendido", out var a) || a.ValueKind is not (JsonValueKind.True or JsonValueKind.False) || !r.TryGetProperty("pendencias", out var p) || p.ValueKind != JsonValueKind.Array)
                     continue;
                 var vals = p.EnumerateArray().Select(x => x.ValueKind == JsonValueKind.String ? x.GetString()! : null).ToList();
                 if (vals.Any(x => x is null)) return null;
