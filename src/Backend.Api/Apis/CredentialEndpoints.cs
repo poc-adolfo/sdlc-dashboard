@@ -23,7 +23,7 @@ public static class CredentialEndpoints
         var workspace = await db.Workspaces.SingleOrDefaultAsync(w => w.Id == id, ct);
         if (workspace is null) return Results.NotFound();
 
-        var perfil = ParsePerfil(request!.Perfil)!.Value;
+        var perfil = PerfilConvert.Parse(request!.Perfil)!.Value;
         var now = DateTime.UtcNow;
 
         string secretRef;
@@ -33,7 +33,7 @@ public static class CredentialEndpoints
             // never the token value itself. A fresh key per rotation keeps the previous Secret intact
             // (and the previous PerfilCredential row's secret_ref still resolvable) until it's cleaned
             // up separately; the DB row is what actually marks a credential active/revoked.
-            secretRef = await secrets.StoreAsync($"{workspace.Slug}-{PerfilToString(perfil)}-{Guid.NewGuid():N}", request.Token!, ct);
+            secretRef = await secrets.StoreAsync($"{workspace.Slug}-{PerfilConvert.ToApiString(perfil)}-{Guid.NewGuid():N}", request.Token!, ct);
         }
         catch (Exception ex) when (ex is not (OutOfMemoryException or StackOverflowException))
         {
@@ -140,7 +140,7 @@ public static class CredentialEndpoints
             errors.Add("request: is required");
             return errors;
         }
-        if (ParsePerfil(request.Perfil) is null)
+        if (PerfilConvert.Parse(request.Perfil) is null)
             errors.Add("perfil: must be one of analista_requisitos, arquiteto, dev, revisor, qa, seguranca, release_deploy");
         if (string.IsNullOrWhiteSpace(request.PlatformUsername))
             errors.Add("platform_username: is required");
@@ -148,30 +148,6 @@ public static class CredentialEndpoints
             errors.Add("token: is required");
         return errors;
     }
-
-    private static Perfil? ParsePerfil(string? value) => value?.Trim().ToLowerInvariant() switch
-    {
-        "analista_requisitos" => Perfil.AnalistaRequisitos,
-        "arquiteto" => Perfil.Arquiteto,
-        "dev" => Perfil.Dev,
-        "revisor" => Perfil.Revisor,
-        "qa" => Perfil.Qa,
-        "seguranca" => Perfil.Seguranca,
-        "release_deploy" => Perfil.ReleaseDeploy,
-        _ => null
-    };
-
-    private static string PerfilToString(Perfil perfil) => perfil switch
-    {
-        Perfil.AnalistaRequisitos => "analista_requisitos",
-        Perfil.Arquiteto => "arquiteto",
-        Perfil.Dev => "dev",
-        Perfil.Revisor => "revisor",
-        Perfil.Qa => "qa",
-        Perfil.Seguranca => "seguranca",
-        Perfil.ReleaseDeploy => "release_deploy",
-        _ => perfil.ToString()
-    };
 
     private static string StatusToString(CredentialStatus status) => status switch
     {
@@ -184,7 +160,7 @@ public static class CredentialEndpoints
     // value) is ever exposed, matching the write-only guarantee in seção 8 - the field simply never
     // reaches this projection, so there is no field to accidentally serialize back to the client.
     private static CredentialResponse Response(PerfilCredential c) =>
-        new(c.Id, c.WorkspaceId, PerfilToString(c.Perfil), c.PlatformUsername, c.SecretRef, c.Scopes, StatusToString(c.Status), c.CreatedAt, c.RotatedAt);
+        new(c.Id, c.WorkspaceId, PerfilConvert.ToApiString(c.Perfil), c.PlatformUsername, c.SecretRef, c.Scopes, StatusToString(c.Status), c.CreatedAt, c.RotatedAt);
 }
 
 public sealed record CreateCredentialRequest(

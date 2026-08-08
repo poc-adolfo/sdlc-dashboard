@@ -61,6 +61,26 @@ public sealed class KubernetesSecretStore(IConfiguration configuration, IHostEnv
         }
     }
 
+    public async Task<string?> ReadAsync(string reference, CancellationToken ct)
+    {
+        var parts = reference.Split('/', 2);
+        var secretName = parts[0];
+        var dataKey = parts.Length > 1 ? parts[1] : DataKey;
+        var @namespace = configuration["Kubernetes:Namespace"];
+        if (string.IsNullOrWhiteSpace(@namespace)) return null;
+
+        try
+        {
+            var client = GetOrCreateClient();
+            var secret = await client.CoreV1.ReadNamespacedSecretAsync(secretName, @namespace, cancellationToken: ct);
+            return secret.Data is not null && secret.Data.TryGetValue(dataKey, out var bytes) ? Encoding.UTF8.GetString(bytes) : null;
+        }
+        catch (k8s.Autorest.HttpOperationException ex) when (ex.Response.StatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            return null;
+        }
+    }
+
     private IKubernetes GetOrCreateClient() => _client ??= new Kubernetes(BuildConfig());
 
     private KubernetesClientConfiguration BuildConfig()
