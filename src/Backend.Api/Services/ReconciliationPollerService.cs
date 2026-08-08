@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using Backend.Api.Apis;
 using Backend.Persistence.Data;
 using Backend.Persistence.Domain;
@@ -16,6 +17,7 @@ namespace Backend.Api.Services;
 public sealed class ReconciliationPollerService(IServiceScopeFactory scopeFactory, IConfiguration configuration, ILogger<ReconciliationPollerService> logger) : BackgroundService
 {
     private const string PipelineLabel = "sdlc-pipeline";
+    private static readonly Regex OriginMarker = new(@"<!--\s*sdlc-dashboard:spec=(?<path>\S+?)\s*-->", RegexOptions.Compiled);
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -57,18 +59,31 @@ public sealed class ReconciliationPollerService(IServiceScopeFactory scopeFactor
         var issues = await platform.ListLabeledIssuesAsync(workspace, PipelineLabel, ct);
         if (issues is null) return; // platform call failed or unsupported - best-effort, try again next pass
 
-        foreach (var (number, _) in issues)
+        foreach (var (number, body) in issues)
         {
             if (await db.PipelineInstances.AnyAsync(p => p.WorkspaceId == workspace.Id && p.ExternalRef == number, ct)) continue;
-            await TryCreatePipelineInstanceAsync(db, workspace.Id, number, ct);
+
+            // Security review on PR #16: the "sdlc-pipeline" label alone isn't proof this Issue came
+            // from the "Subir US" flow - anyone with triage permission on the repo can apply a label to
+            // an arbitrary Issue. SpecUsEndpoints.Publish stamps an origin marker naming the spec it
+            // published from; only recreate the row if that marker is present *and* names a spec this
+            // workspace actually has, so a relabeled unrelated Issue is silently skipped instead of
+            // injecting pipeline state for it.
+            var specPath = OriginMarker.Match(body) is { Success: true } match ? match.Groups["path"].Value : null;
+            if (specPath is null) continue;
+            var spec = await db.Specs.SingleOrDefaultAsync(s => s.WorkspaceId == workspace.Id && s.Path == specPath, ct);
+            if (spec is null) continue;
+
+            await TryCreatePipelineInstanceAsync(db, workspace.Id, number, ct, spec.Id);
         }
     }
 
-    internal static async Task TryCreatePipelineInstanceAsync(AppDbContext db, long workspaceId, string externalRef, CancellationToken ct)
+    internal static async Task TryCreatePipelineInstanceAsync(AppDbContext db, long workspaceId, string externalRef, CancellationToken ct, long? specId = null)
     {
         db.PipelineInstances.Add(new PipelineInstance
         {
             WorkspaceId = workspaceId,
+            SpecId = specId,
             FaseAtual = PipelinePhase.Requisitos,
             GateStatus = GateStatus.Approved,
             ExternalRef = externalRef,

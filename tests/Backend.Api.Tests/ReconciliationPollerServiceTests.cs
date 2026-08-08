@@ -86,6 +86,16 @@ public sealed class ReconciliationPollerServiceTests
         return pipeline.Id;
     }
 
+    private static async Task<long> SeedSpec(ReconciliationApplicationFactory factory, long workspaceId, string path)
+    {
+        using var scope = factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var spec = new Spec { WorkspaceId = workspaceId, Path = path, Title = "Título", Status = "rascunho", CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow };
+        db.Specs.Add(spec);
+        await db.SaveChangesAsync();
+        return spec.Id;
+    }
+
     private static ReconciliationPollerService BuildService(ReconciliationApplicationFactory factory, int intervalMinutes = 5)
     {
         var config = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?> { ["Reconciliation:IntervalMinutes"] = intervalMinutes.ToString() }).Build();
@@ -100,14 +110,15 @@ public sealed class ReconciliationPollerServiceTests
     }
 
     [Fact]
-    public async Task RecreatesMissingPipelineInstanceForALabeledIssue()
+    public async Task RecreatesMissingPipelineInstanceForALabeledIssueWithAValidOriginMarker()
     {
         using var factory = new ReconciliationApplicationFactory();
         using var setupClient = await AuthenticatedClient(factory);
         var workspaceId = await CreateGitHubWorkspace(setupClient);
+        var specId = await SeedSpec(factory, workspaceId, "specs/us-exemplo.md");
 
         factory.Handler.On(r => r.Method == HttpMethod.Get && r.RequestUri!.AbsolutePath == "/repos/acme/platform/issues", _ =>
-            new HttpResponseMessage(HttpStatusCode.OK) { Content = JsonContent.Create(new[] { new { number = 7, body = "US body" } }) });
+            new HttpResponseMessage(HttpStatusCode.OK) { Content = JsonContent.Create(new[] { new { number = 7, body = "US body\n\n<!-- sdlc-dashboard:spec=specs/us-exemplo.md -->" } }) });
 
         var service = BuildService(factory);
         await service.RunOnceAsync(CancellationToken.None);
@@ -116,6 +127,28 @@ public sealed class ReconciliationPollerServiceTests
         var created = Assert.Single(pipelines);
         Assert.Equal("7", created.ExternalRef);
         Assert.Equal(PipelinePhase.Requisitos, created.FaseAtual);
+        Assert.Equal(specId, created.SpecId);
+    }
+
+    [Theory]
+    [InlineData("US body with no origin marker at all")]
+    [InlineData("US body\n\n<!-- sdlc-dashboard:spec=specs/does-not-exist.md -->")]
+    public async Task DoesNotRecreateALabeledIssueWithoutAValidOriginMarker(string body)
+    {
+        // Security review on PR #16: the "sdlc-pipeline" label alone is attacker-controllable (anyone
+        // with triage permission on the repo), so a missing marker or one naming a spec this workspace
+        // doesn't actually have must not be trusted enough to inject a pipeline_instance.
+        using var factory = new ReconciliationApplicationFactory();
+        using var setupClient = await AuthenticatedClient(factory);
+        var workspaceId = await CreateGitHubWorkspace(setupClient);
+
+        factory.Handler.On(r => r.Method == HttpMethod.Get && r.RequestUri!.AbsolutePath == "/repos/acme/platform/issues", _ =>
+            new HttpResponseMessage(HttpStatusCode.OK) { Content = JsonContent.Create(new[] { new { number = 7, body } }) });
+
+        var service = BuildService(factory);
+        await service.RunOnceAsync(CancellationToken.None);
+
+        Assert.Empty(await LoadPipelines(factory, workspaceId));
     }
 
     [Fact]
