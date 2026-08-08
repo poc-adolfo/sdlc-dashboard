@@ -55,6 +55,18 @@ public static class SpecListingEndpoints
                 spec.UpdatedAt = now;
             }
         }
+
+        // Drop index rows for files no longer present in the directory, so a later listing doesn't
+        // keep offering a spec that was deleted/moved. Never removes a spec already referenced by a
+        // pipeline_instance (FK is Restrict, and the historical link must survive the source file
+        // disappearing) - those just stop being returned by the status filter once nothing else
+        // points at their now-stale status, same as any spec whose file changed underneath it.
+        var staleSpecs = await db.Specs
+            .Where(s => s.WorkspaceId == id && !files.Contains(s.Path))
+            .Where(s => !db.PipelineInstances.Any(p => p.SpecId == s.Id))
+            .ToListAsync(ct);
+        db.Specs.RemoveRange(staleSpecs);
+
         await db.SaveChangesAsync(ct);
 
         var query = db.Specs.AsNoTracking().Where(s => s.WorkspaceId == id);

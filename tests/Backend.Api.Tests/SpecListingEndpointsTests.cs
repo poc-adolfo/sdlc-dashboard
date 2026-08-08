@@ -104,6 +104,53 @@ public sealed class SpecListingEndpointsTests
     }
 
     [Fact]
+    public async Task StaleSpecIsRemovedWhenFileDisappearsFromDirectory()
+    {
+        using var factory = new SpecUsApplicationFactory();
+        var currentFiles = new[] { ("a.md", "a.md", "file"), ("b.md", "b.md", "file") };
+        factory.Handler.On(r => r.Method == HttpMethod.Get && r.RequestUri!.AbsolutePath == "/repos/acme/platform/contents/", _ => GitHubDirectoryResponse(currentFiles));
+        factory.Handler.On(r => r.Method == HttpMethod.Get && r.RequestUri!.AbsolutePath == "/repos/acme/platform/contents/a.md", _ => GitHubContentResponse(RascunhoSpec));
+        factory.Handler.On(r => r.Method == HttpMethod.Get && r.RequestUri!.AbsolutePath == "/repos/acme/platform/contents/b.md", _ => GitHubContentResponse(PropostaSpec));
+
+        using var client = await AuthenticatedClient(factory);
+        var workspaceId = await CreateGitHubWorkspace(client);
+
+        var first = await (await client.GetAsync($"/workspaces/{workspaceId}/specs")).Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(2, first.GetArrayLength());
+
+        currentFiles = new[] { ("a.md", "a.md", "file") };
+        var second = await (await client.GetAsync($"/workspaces/{workspaceId}/specs")).Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(1, second.GetArrayLength());
+        Assert.Equal("a.md", second[0].GetProperty("path").GetString());
+    }
+
+    [Fact]
+    public async Task StaleSpecReferencedByAPipelineInstanceIsNotRemoved()
+    {
+        using var factory = new SpecUsApplicationFactory();
+        var currentFiles = new[] { ("a.md", "a.md", "file") };
+        factory.Handler.On(r => r.Method == HttpMethod.Get && r.RequestUri!.AbsolutePath == "/repos/acme/platform/contents/", _ => GitHubDirectoryResponse(currentFiles));
+        factory.Handler.On(r => r.Method == HttpMethod.Get && r.RequestUri!.AbsolutePath == "/repos/acme/platform/contents/a.md", _ => GitHubContentResponse(RascunhoSpec));
+        factory.Handler.On(r => r.RequestUri!.Host == "analista.test", _ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = JsonContent.Create(new { choices = new[] { new { message = new { content = "{\"dor_atendido\": true, \"pendencias\": []}" } } } })
+        });
+        factory.Handler.On(r => r.Method == HttpMethod.Post && r.RequestUri!.AbsolutePath.EndsWith("/issues"), _ => new HttpResponseMessage(HttpStatusCode.Created) { Content = JsonContent.Create(new { number = 1 }) });
+
+        using var client = await AuthenticatedClient(factory);
+        var workspaceId = await CreateGitHubWorkspace(client);
+
+        await client.GetAsync($"/workspaces/{workspaceId}/specs"); // syncs the spec index
+        var publish = await client.PostAsync($"/workspaces/{workspaceId}/specs/a.md/subir-us", content: null);
+        Assert.Equal(HttpStatusCode.Created, publish.StatusCode);
+
+        currentFiles = Array.Empty<(string, string, string)>();
+        var afterRemoval = await (await client.GetAsync($"/workspaces/{workspaceId}/specs")).Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(1, afterRemoval.GetArrayLength());
+        Assert.Equal("a.md", afterRemoval[0].GetProperty("path").GetString());
+    }
+
+    [Fact]
     public async Task DirectoryListingFailureReturnsBadGateway()
     {
         using var factory = new SpecUsApplicationFactory();

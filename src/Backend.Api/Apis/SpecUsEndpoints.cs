@@ -44,7 +44,9 @@ public static class SpecUsEndpoints
         var external = await Publish(workspace, title, body, platform, ct);
         if (external is null) return Results.StatusCode(StatusCodes.Status502BadGateway);
 
-        var spec = await db.Specs.SingleOrDefaultAsync(x => x.WorkspaceId == id && x.Path == specPath, ct);
+        // Spec.Path in the index (SpecListingEndpoints) is always the full repo-relative path, same as
+        // fullPath here - not specPath, which is only the route segment after specs_path is stripped.
+        var spec = await db.Specs.SingleOrDefaultAsync(x => x.WorkspaceId == id && x.Path == fullPath, ct);
         var pipeline = new PipelineInstance { WorkspaceId = id, SpecId = spec?.Id, FaseAtual = PipelinePhase.Requisitos, GateStatus = GateStatus.Approved, ExternalRef = external, CreatedAt = DateTime.UtcNow };
         db.PipelineInstances.Add(pipeline);
         await db.SaveChangesAsync(ct);
