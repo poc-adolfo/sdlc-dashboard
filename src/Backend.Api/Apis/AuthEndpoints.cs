@@ -47,6 +47,22 @@ public static class AuthEndpoints
             logs.CreateLogger("Auth").LogInformation("Successful operator login; IP={RemoteIp}", http.Connection.RemoteIpAddress);
             return Results.Ok(new { authenticated = true });
         }).AllowAnonymous().WithName("Login");
+
+        // Sessions are stateless self-contained signed tokens (SessionService.Create/Validate) - there
+        // is no server-side session store to revoke, so this can't invalidate a token an attacker
+        // already captured elsewhere. What it does do, and what SessionMiddleware's blanket
+        // require-a-valid-session-except-/auth/login rule can't: tell the browser to stop sending the
+        // cookie at all, by overwriting it with an already-expired one using the exact same
+        // HttpOnly/Secure/SameSite/path attributes it was set with - without that match the browser
+        // won't actually replace it. A future reload's session probe then correctly comes back
+        // unauthenticated instead of silently reusing the old cookie.
+        app.MapPost("/auth/logout", (HttpContext http, IOptions<Backend.Api.Auth.SessionOptions> options) =>
+        {
+            var cookie = options.Value;
+            http.Response.Cookies.Delete(cookie.CookieName, new CookieOptions { HttpOnly = true, Secure = cookie.SecureCookie, SameSite = SameSiteMode.Strict, IsEssential = true });
+            return Results.Ok();
+        }).WithName("Logout");
+
         return app;
     }
 
