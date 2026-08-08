@@ -7,6 +7,7 @@ using Backend.Api.Apis;
 using Backend.Persistence.Data;
 using Backend.Persistence.Domain;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace Backend.Api.Tests;
@@ -352,5 +353,55 @@ public sealed class WebhookParsingTests
         Assert.Equal(a, b);
         Assert.Equal(64, a.Length);
         Assert.Equal(a, a.ToLowerInvariant());
+    }
+}
+
+public sealed class AdvancePhaseAsyncTests
+{
+    private static AppDbContext CreateMigratedContext(out Microsoft.Data.Sqlite.SqliteConnection connection)
+    {
+        connection = new Microsoft.Data.Sqlite.SqliteConnection("Data Source=:memory:");
+        connection.Open();
+        var db = new AppDbContext(new Microsoft.EntityFrameworkCore.DbContextOptionsBuilder<AppDbContext>().UseSqlite(connection).Options);
+        db.Database.Migrate();
+        return db;
+    }
+
+    [Fact]
+    public async Task GenuinePersistenceFailureIsNotSwallowedAsTheBenignDedupRace()
+    {
+        // Revisor finding on PR #15: catching DbUpdateException unconditionally treated any persistence
+        // failure as the expected duplicate-delivery race. Here the PipelineInstance never actually
+        // exists in the DB (a phantom Id), so the PhaseTransition insert fails on the FK constraint, not
+        // the delivery-id unique index - this must propagate, not be swallowed as if someone else had
+        // already recorded the same delivery.
+        using var db = CreateMigratedContext(out var connection);
+        using var _ = connection;
+        var phantomPipeline = new PipelineInstance { Id = 999999, WorkspaceId = 1, ExternalRef = "x", FaseAtual = PipelinePhase.Requisitos, GateStatus = GateStatus.Approved, CreatedAt = DateTime.UtcNow };
+
+        await Assert.ThrowsAsync<Microsoft.EntityFrameworkCore.DbUpdateException>(() =>
+            WebhookEndpoints.AdvancePhaseAsync(db, phantomPipeline, PipelinePhase.CodeReview, "test", deliveryId: "delivery-x", CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task ConfirmedDuplicateDeliveryIsSwallowed()
+    {
+        using var db = CreateMigratedContext(out var connection);
+        using var _ = connection;
+        var workspace = new Backend.Persistence.Domain.Workspace { Name = "W", Slug = "w", PlatformRef = "acme/platform" };
+        db.Workspaces.Add(workspace);
+        await db.SaveChangesAsync();
+        var pipeline = new PipelineInstance { WorkspaceId = workspace.Id, ExternalRef = "1", FaseAtual = PipelinePhase.Requisitos, GateStatus = GateStatus.Approved, CreatedAt = DateTime.UtcNow };
+        db.PipelineInstances.Add(pipeline);
+        await db.SaveChangesAsync();
+
+        // Simulates the losing side of a real race: a transition for this exact delivery already exists.
+        db.PhaseTransitions.Add(new PhaseTransition { PipelineInstanceId = pipeline.Id, Fase = PipelinePhase.CodeReview, EnteredAt = DateTime.UtcNow, SourceEvent = "pull_request.opened", DeliveryId = "delivery-1" });
+        await db.SaveChangesAsync();
+
+        var ex = await Record.ExceptionAsync(() =>
+            WebhookEndpoints.AdvancePhaseAsync(db, pipeline, PipelinePhase.CodeReview, "pull_request.opened", deliveryId: "delivery-1", CancellationToken.None, setPrRef: "1"));
+
+        Assert.Null(ex);
     }
 }
