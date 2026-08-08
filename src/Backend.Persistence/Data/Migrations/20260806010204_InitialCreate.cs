@@ -1,35 +1,274 @@
 ﻿using System;
 using Microsoft.EntityFrameworkCore.Migrations;
-using Microsoft.EntityFrameworkCore.Infrastructure;
-using Backend.Persistence.Data;
 
 #nullable disable
 
 namespace Backend.Persistence.Data.Migrations
 {
-    [DbContext(typeof(AppDbContext))]
-    [Migration("20260806010204_InitialCreate")]
+    /// <inheritdoc />
     public partial class InitialCreate : Migration
     {
+        /// <inheritdoc />
         protected override void Up(MigrationBuilder migrationBuilder)
         {
-            migrationBuilder.CreateTable(name: "client", columns: table => new { Id = table.Column<long>(type: "INTEGER", nullable: false).Annotation("Sqlite:Autoincrement", true), Name = table.Column<string>(type: "TEXT", nullable: false), CreatedAt = table.Column<DateTime>(type: "TEXT", nullable: false) }, constraints: table => table.PrimaryKey("PK_client", x => x.Id));
-            migrationBuilder.CreateTable(name: "workspace", columns: table => new { Id = table.Column<long>(type: "INTEGER", nullable: false).Annotation("Sqlite:Autoincrement", true), TenantId = table.Column<string>(type: "TEXT", nullable: true, defaultValue: "default"), ClientId = table.Column<long>(type: "INTEGER", nullable: true), Name = table.Column<string>(type: "TEXT", nullable: false), Slug = table.Column<string>(type: "TEXT", nullable: false), Platform = table.Column<int>(type: "INTEGER", nullable: false), PlatformRef = table.Column<string>(type: "TEXT", nullable: false), SpecsPath = table.Column<string>(type: "TEXT", nullable: false, defaultValue: "specs/"), SpecsRepo = table.Column<string>(type: "TEXT", nullable: true), CodeRepo = table.Column<string>(type: "TEXT", nullable: true), AdoWorkItemType = table.Column<string>(type: "TEXT", nullable: true, defaultValue: "User Story"), AppSecretRef = table.Column<string>(type: "TEXT", nullable: true), Status = table.Column<int>(type: "INTEGER", nullable: false), CreatedAt = table.Column<DateTime>(type: "TEXT", nullable: false) }, constraints: table => { table.PrimaryKey("PK_workspace", x => x.Id); table.ForeignKey("FK_workspace_client", x => x.ClientId, "client", "Id", onDelete: ReferentialAction.Restrict); table.CheckConstraint("CK_workspace_platform", "platform IN (0,1)"); table.CheckConstraint("CK_workspace_status", "status IN (0,1)"); });
-            migrationBuilder.CreateTable(name: "assessment", columns: table => new { Id = table.Column<long>(type: "INTEGER", nullable: false).Annotation("Sqlite:Autoincrement", true), WorkspaceId = table.Column<long>(type: "INTEGER", nullable: false), ClientId = table.Column<long>(type: "INTEGER", nullable: false), Content = table.Column<string>(type: "TEXT", nullable: false), Status = table.Column<int>(type: "INTEGER", nullable: false), CreatedAt = table.Column<DateTime>(type: "TEXT", nullable: false), UpdatedAt = table.Column<DateTime>(type: "TEXT", nullable: false) }, constraints: table => { table.PrimaryKey("PK_assessment", x => x.Id); table.ForeignKey("FK_assessment_workspace", x => x.WorkspaceId, "workspace", "Id", onDelete: ReferentialAction.Cascade); table.ForeignKey("FK_assessment_client", x => x.ClientId, "client", "Id", onDelete: ReferentialAction.Restrict); });
-            migrationBuilder.CreateTable(name: "spec", columns: table => new { Id = table.Column<long>(type: "INTEGER", nullable: false).Annotation("Sqlite:Autoincrement", true), WorkspaceId = table.Column<long>(type: "INTEGER", nullable: false), Path = table.Column<string>(type: "TEXT", nullable: false), Title = table.Column<string>(type: "TEXT", nullable: false), Status = table.Column<string>(type: "TEXT", nullable: false), Version = table.Column<int>(type: "INTEGER", nullable: false), CreatedAt = table.Column<DateTime>(type: "TEXT", nullable: false), UpdatedAt = table.Column<DateTime>(type: "TEXT", nullable: false) }, constraints: table => { table.PrimaryKey("PK_spec", x => x.Id); table.ForeignKey("FK_spec_workspace", x => x.WorkspaceId, "workspace", "Id", onDelete: ReferentialAction.Cascade); });
-            migrationBuilder.CreateTable(name: "pipeline_instance", columns: table => new { Id = table.Column<long>(type: "INTEGER", nullable: false).Annotation("Sqlite:Autoincrement", true), WorkspaceId = table.Column<long>(type: "INTEGER", nullable: false), SpecId = table.Column<long>(type: "INTEGER", nullable: true), FaseAtual = table.Column<int>(type: "INTEGER", nullable: false), GateStatus = table.Column<int>(type: "INTEGER", nullable: false), ExternalRef = table.Column<string>(type: "TEXT", nullable: false), PrRef = table.Column<string>(type: "TEXT", nullable: true), CreatedAt = table.Column<DateTime>(type: "TEXT", nullable: false) }, constraints: table => { table.PrimaryKey("PK_pipeline_instance", x => x.Id); table.ForeignKey("FK_pipeline_workspace", x => x.WorkspaceId, "workspace", "Id", onDelete: ReferentialAction.Cascade); table.ForeignKey("FK_pipeline_spec", x => x.SpecId, "spec", "Id", onDelete: ReferentialAction.Restrict); });
-            migrationBuilder.CreateTable(name: "phase_transition", columns: table => new { Id = table.Column<long>(type: "INTEGER", nullable: false).Annotation("Sqlite:Autoincrement", true), PipelineInstanceId = table.Column<long>(type: "INTEGER", nullable: false), Fase = table.Column<int>(type: "INTEGER", nullable: false), EnteredAt = table.Column<DateTime>(type: "TEXT", nullable: false), SourceEvent = table.Column<string>(type: "TEXT", nullable: false) }, constraints: table => { table.PrimaryKey("PK_phase_transition", x => x.Id); table.ForeignKey("FK_transition_pipeline", x => x.PipelineInstanceId, "pipeline_instance", "Id", onDelete: ReferentialAction.Cascade); });
-            migrationBuilder.CreateTable(name: "perfil_credential", columns: table => new { Id = table.Column<long>(type: "INTEGER", nullable: false).Annotation("Sqlite:Autoincrement", true), WorkspaceId = table.Column<long>(type: "INTEGER", nullable: false), Perfil = table.Column<int>(type: "INTEGER", nullable: false), PlatformUsername = table.Column<string>(type: "TEXT", nullable: false), SecretRef = table.Column<string>(type: "TEXT", nullable: false), Scopes = table.Column<string>(type: "TEXT", nullable: true), Status = table.Column<int>(type: "INTEGER", nullable: false), CreatedAt = table.Column<DateTime>(type: "TEXT", nullable: false), RotatedAt = table.Column<DateTime>(type: "TEXT", nullable: true) }, constraints: table => { table.PrimaryKey("PK_perfil_credential", x => x.Id); table.ForeignKey("FK_credential_workspace", x => x.WorkspaceId, "workspace", "Id", onDelete: ReferentialAction.Cascade); });
-            migrationBuilder.CreateIndex(name: "IX_client_Name", table: "client", column: "Name");
-            migrationBuilder.CreateIndex(name: "IX_workspace_Slug", table: "workspace", column: "Slug", unique: true);
-            migrationBuilder.CreateIndex(name: "IX_assessment_WorkspaceId", table: "assessment", column: "WorkspaceId");
-            migrationBuilder.CreateIndex(name: "IX_assessment_ClientId", table: "assessment", column: "ClientId");
-            migrationBuilder.CreateIndex(name: "IX_spec_WorkspaceId_Path", table: "spec", columns: new[] { "WorkspaceId", "Path" }, unique: true);
-            migrationBuilder.CreateIndex(name: "IX_pipeline_instance_WorkspaceId_ExternalRef", table: "pipeline_instance", columns: new[] { "WorkspaceId", "ExternalRef" }, unique: true);
-            migrationBuilder.CreateIndex(name: "IX_pipeline_instance_SpecId", table: "pipeline_instance", column: "SpecId");
-            migrationBuilder.CreateIndex(name: "IX_phase_transition_PipelineInstanceId", table: "phase_transition", column: "PipelineInstanceId");
-            migrationBuilder.CreateIndex(name: "IX_perfil_credential_WorkspaceId_Perfil_Status", table: "perfil_credential", columns: new[] { "WorkspaceId", "Perfil", "Status" });
+            migrationBuilder.CreateTable(
+                name: "client",
+                columns: table => new
+                {
+                    Id = table.Column<long>(type: "INTEGER", nullable: false)
+                        .Annotation("Sqlite:Autoincrement", true),
+                    Name = table.Column<string>(type: "TEXT", nullable: false),
+                    CreatedAt = table.Column<DateTime>(type: "TEXT", nullable: false)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_client", x => x.Id);
+                });
+
+            migrationBuilder.CreateTable(
+                name: "workspace",
+                columns: table => new
+                {
+                    Id = table.Column<long>(type: "INTEGER", nullable: false)
+                        .Annotation("Sqlite:Autoincrement", true),
+                    TenantId = table.Column<string>(type: "TEXT", nullable: true, defaultValue: "default"),
+                    ClientId = table.Column<long>(type: "INTEGER", nullable: true),
+                    Name = table.Column<string>(type: "TEXT", nullable: false),
+                    Slug = table.Column<string>(type: "TEXT", nullable: false),
+                    Platform = table.Column<int>(type: "INTEGER", nullable: false),
+                    PlatformRef = table.Column<string>(type: "TEXT", nullable: false),
+                    SpecsPath = table.Column<string>(type: "TEXT", nullable: false, defaultValue: "specs/"),
+                    SpecsRepo = table.Column<string>(type: "TEXT", nullable: true),
+                    CodeRepo = table.Column<string>(type: "TEXT", nullable: true),
+                    AdoWorkItemType = table.Column<string>(type: "TEXT", nullable: true, defaultValue: "User Story"),
+                    AppSecretRef = table.Column<string>(type: "TEXT", nullable: true),
+                    Status = table.Column<int>(type: "INTEGER", nullable: false),
+                    CreatedAt = table.Column<DateTime>(type: "TEXT", nullable: false)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_workspace", x => x.Id);
+                    table.CheckConstraint("CK_workspace_platform", "platform IN (0,1)");
+                    table.CheckConstraint("CK_workspace_status", "status IN (0,1)");
+                    table.ForeignKey(
+                        name: "FK_workspace_client_ClientId",
+                        column: x => x.ClientId,
+                        principalTable: "client",
+                        principalColumn: "Id",
+                        onDelete: ReferentialAction.Restrict);
+                });
+
+            migrationBuilder.CreateTable(
+                name: "assessment",
+                columns: table => new
+                {
+                    Id = table.Column<long>(type: "INTEGER", nullable: false)
+                        .Annotation("Sqlite:Autoincrement", true),
+                    WorkspaceId = table.Column<long>(type: "INTEGER", nullable: false),
+                    ClientId = table.Column<long>(type: "INTEGER", nullable: false),
+                    Content = table.Column<string>(type: "TEXT", nullable: false),
+                    Status = table.Column<int>(type: "INTEGER", nullable: false),
+                    CreatedAt = table.Column<DateTime>(type: "TEXT", nullable: false),
+                    UpdatedAt = table.Column<DateTime>(type: "TEXT", nullable: false)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_assessment", x => x.Id);
+                    table.ForeignKey(
+                        name: "FK_assessment_client_ClientId",
+                        column: x => x.ClientId,
+                        principalTable: "client",
+                        principalColumn: "Id",
+                        onDelete: ReferentialAction.Restrict);
+                    table.ForeignKey(
+                        name: "FK_assessment_workspace_WorkspaceId",
+                        column: x => x.WorkspaceId,
+                        principalTable: "workspace",
+                        principalColumn: "Id",
+                        onDelete: ReferentialAction.Cascade);
+                });
+
+            migrationBuilder.CreateTable(
+                name: "perfil_credential",
+                columns: table => new
+                {
+                    Id = table.Column<long>(type: "INTEGER", nullable: false)
+                        .Annotation("Sqlite:Autoincrement", true),
+                    WorkspaceId = table.Column<long>(type: "INTEGER", nullable: false),
+                    Perfil = table.Column<int>(type: "INTEGER", nullable: false),
+                    PlatformUsername = table.Column<string>(type: "TEXT", nullable: false),
+                    SecretRef = table.Column<string>(type: "TEXT", nullable: false),
+                    Scopes = table.Column<string>(type: "TEXT", nullable: true),
+                    Status = table.Column<int>(type: "INTEGER", nullable: false),
+                    CreatedAt = table.Column<DateTime>(type: "TEXT", nullable: false),
+                    RotatedAt = table.Column<DateTime>(type: "TEXT", nullable: true)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_perfil_credential", x => x.Id);
+                    table.ForeignKey(
+                        name: "FK_perfil_credential_workspace_WorkspaceId",
+                        column: x => x.WorkspaceId,
+                        principalTable: "workspace",
+                        principalColumn: "Id",
+                        onDelete: ReferentialAction.Cascade);
+                });
+
+            migrationBuilder.CreateTable(
+                name: "spec",
+                columns: table => new
+                {
+                    Id = table.Column<long>(type: "INTEGER", nullable: false)
+                        .Annotation("Sqlite:Autoincrement", true),
+                    WorkspaceId = table.Column<long>(type: "INTEGER", nullable: false),
+                    Path = table.Column<string>(type: "TEXT", nullable: false),
+                    Title = table.Column<string>(type: "TEXT", nullable: false),
+                    Status = table.Column<string>(type: "TEXT", nullable: false),
+                    Version = table.Column<int>(type: "INTEGER", nullable: false),
+                    CreatedAt = table.Column<DateTime>(type: "TEXT", nullable: false),
+                    UpdatedAt = table.Column<DateTime>(type: "TEXT", nullable: false)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_spec", x => x.Id);
+                    table.ForeignKey(
+                        name: "FK_spec_workspace_WorkspaceId",
+                        column: x => x.WorkspaceId,
+                        principalTable: "workspace",
+                        principalColumn: "Id",
+                        onDelete: ReferentialAction.Cascade);
+                });
+
+            migrationBuilder.CreateTable(
+                name: "pipeline_instance",
+                columns: table => new
+                {
+                    Id = table.Column<long>(type: "INTEGER", nullable: false)
+                        .Annotation("Sqlite:Autoincrement", true),
+                    WorkspaceId = table.Column<long>(type: "INTEGER", nullable: false),
+                    SpecId = table.Column<long>(type: "INTEGER", nullable: true),
+                    FaseAtual = table.Column<int>(type: "INTEGER", nullable: false),
+                    GateStatus = table.Column<int>(type: "INTEGER", nullable: false),
+                    ExternalRef = table.Column<string>(type: "TEXT", nullable: false),
+                    PrRef = table.Column<string>(type: "TEXT", nullable: true),
+                    CreatedAt = table.Column<DateTime>(type: "TEXT", nullable: false)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_pipeline_instance", x => x.Id);
+                    table.ForeignKey(
+                        name: "FK_pipeline_instance_spec_SpecId",
+                        column: x => x.SpecId,
+                        principalTable: "spec",
+                        principalColumn: "Id",
+                        onDelete: ReferentialAction.Restrict);
+                    table.ForeignKey(
+                        name: "FK_pipeline_instance_workspace_WorkspaceId",
+                        column: x => x.WorkspaceId,
+                        principalTable: "workspace",
+                        principalColumn: "Id",
+                        onDelete: ReferentialAction.Cascade);
+                });
+
+            migrationBuilder.CreateTable(
+                name: "phase_transition",
+                columns: table => new
+                {
+                    Id = table.Column<long>(type: "INTEGER", nullable: false)
+                        .Annotation("Sqlite:Autoincrement", true),
+                    PipelineInstanceId = table.Column<long>(type: "INTEGER", nullable: false),
+                    Fase = table.Column<int>(type: "INTEGER", nullable: false),
+                    EnteredAt = table.Column<DateTime>(type: "TEXT", nullable: false),
+                    SourceEvent = table.Column<string>(type: "TEXT", nullable: false)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_phase_transition", x => x.Id);
+                    table.ForeignKey(
+                        name: "FK_phase_transition_pipeline_instance_PipelineInstanceId",
+                        column: x => x.PipelineInstanceId,
+                        principalTable: "pipeline_instance",
+                        principalColumn: "Id",
+                        onDelete: ReferentialAction.Cascade);
+                });
+
+            migrationBuilder.CreateIndex(
+                name: "IX_assessment_ClientId",
+                table: "assessment",
+                column: "ClientId");
+
+            migrationBuilder.CreateIndex(
+                name: "IX_assessment_WorkspaceId",
+                table: "assessment",
+                column: "WorkspaceId");
+
+            migrationBuilder.CreateIndex(
+                name: "IX_client_Name",
+                table: "client",
+                column: "Name");
+
+            migrationBuilder.CreateIndex(
+                name: "IX_perfil_credential_WorkspaceId_Perfil_Status",
+                table: "perfil_credential",
+                columns: new[] { "WorkspaceId", "Perfil", "Status" });
+
+            migrationBuilder.CreateIndex(
+                name: "IX_phase_transition_PipelineInstanceId",
+                table: "phase_transition",
+                column: "PipelineInstanceId");
+
+            migrationBuilder.CreateIndex(
+                name: "IX_pipeline_instance_SpecId",
+                table: "pipeline_instance",
+                column: "SpecId");
+
+            migrationBuilder.CreateIndex(
+                name: "IX_pipeline_instance_WorkspaceId_ExternalRef",
+                table: "pipeline_instance",
+                columns: new[] { "WorkspaceId", "ExternalRef" },
+                unique: true);
+
+            migrationBuilder.CreateIndex(
+                name: "IX_spec_WorkspaceId_Path",
+                table: "spec",
+                columns: new[] { "WorkspaceId", "Path" },
+                unique: true);
+
+            migrationBuilder.CreateIndex(
+                name: "IX_workspace_ClientId",
+                table: "workspace",
+                column: "ClientId");
+
+            migrationBuilder.CreateIndex(
+                name: "IX_workspace_Slug",
+                table: "workspace",
+                column: "Slug",
+                unique: true);
         }
-        protected override void Down(MigrationBuilder migrationBuilder) { migrationBuilder.DropTable("phase_transition"); migrationBuilder.DropTable("perfil_credential"); migrationBuilder.DropTable("pipeline_instance"); migrationBuilder.DropTable("spec"); migrationBuilder.DropTable("assessment"); migrationBuilder.DropTable("workspace"); migrationBuilder.DropTable("client"); }
+
+        /// <inheritdoc />
+        protected override void Down(MigrationBuilder migrationBuilder)
+        {
+            migrationBuilder.DropTable(
+                name: "assessment");
+
+            migrationBuilder.DropTable(
+                name: "perfil_credential");
+
+            migrationBuilder.DropTable(
+                name: "phase_transition");
+
+            migrationBuilder.DropTable(
+                name: "pipeline_instance");
+
+            migrationBuilder.DropTable(
+                name: "spec");
+
+            migrationBuilder.DropTable(
+                name: "workspace");
+
+            migrationBuilder.DropTable(
+                name: "client");
+        }
     }
 }
