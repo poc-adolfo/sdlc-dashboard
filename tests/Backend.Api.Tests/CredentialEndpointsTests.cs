@@ -21,6 +21,10 @@ public sealed class FakeSecretStore : ISecretStore
     // that had nothing to do with the production code under test.
     public System.Collections.Concurrent.ConcurrentBag<(string Key, string Value)> Stored { get; } = new();
     public System.Collections.Concurrent.ConcurrentBag<string> Deleted { get; } = new();
+    // Lets a test make ReadAsync(reference) return a known value for a reference that was never
+    // actually written through StoreAsync - e.g. workspace.AppSecretRef, which the operator sets
+    // directly as a raw reference string, not via this store's own write path.
+    public System.Collections.Concurrent.ConcurrentDictionary<string, string> Seeded { get; } = new();
     public bool ShouldFail { get; set; }
     public bool ShouldFailDelete { get; set; }
 
@@ -36,6 +40,14 @@ public sealed class FakeSecretStore : ISecretStore
         if (ShouldFailDelete) throw new InvalidOperationException("secret store delete unavailable");
         Deleted.Add(reference);
         return Task.CompletedTask;
+    }
+
+    public Task<string?> ReadAsync(string reference, CancellationToken ct)
+    {
+        if (Seeded.TryGetValue(reference, out var seeded)) return Task.FromResult<string?>(seeded);
+        var key = reference.EndsWith("/value") ? reference[..^"/value".Length] : reference;
+        var match = Stored.FirstOrDefault(s => s.Key == key);
+        return Task.FromResult(match.Key is not null ? match.Value : null);
     }
 }
 

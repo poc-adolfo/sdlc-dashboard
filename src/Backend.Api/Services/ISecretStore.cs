@@ -19,4 +19,13 @@ public interface ISecretStore
     /// gone (idempotent).
     /// </summary>
     Task DeleteAsync(string reference, CancellationToken ct);
+
+    /// <summary>
+    /// Reads back the value a prior <see cref="StoreAsync"/> call returned <paramref name="reference"/>
+    /// for. Used where the application has to act as itself against GitHub/Azure DevOps (webhook
+    /// signature verification, poller reconciliation calls) - seção 10.1's "Credencial própria da
+    /// aplicação". Returns null if the reference doesn't resolve to anything (not configured, or the
+    /// secret has since been deleted).
+    /// </summary>
+    Task<string?> ReadAsync(string reference, CancellationToken ct);
 }
