@@ -119,6 +119,15 @@ public sealed class WebhookEndpointsTests
         Assert.Equal(HttpStatusCode.Unauthorized, (await client.SendAsync(wrongSignature)).StatusCode);
     }
 
+    // No automated test for the 413-on-oversized-body path: enforcement of
+    // IHttpMaxRequestBodySizeFeature.MaxRequestBodySize happens inside Kestrel's real request-body
+    // stream (Http1MessageBody), which WebApplicationFactory's in-memory TestServer never exercises -
+    // TestServer accepts a fully-buffered body regardless of the configured limit, so a test asserting
+    // 413 here would only pass if the feature value were read back, not if Kestrel actually enforced
+    // it. Setting IHttpMaxRequestBodySizeFeature.MaxRequestBodySize before reading is the documented,
+    // standard ASP.NET Core mechanism for this (see Receive's comment); Kestrel honoring it is a
+    // framework guarantee, not app logic that needs re-verifying here.
+
     [Fact]
     public async Task MissingWorkspaceReturnsNotFound()
     {

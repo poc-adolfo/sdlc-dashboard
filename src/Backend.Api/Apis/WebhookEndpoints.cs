@@ -5,6 +5,7 @@ using System.Text.RegularExpressions;
 using Backend.Api.Services;
 using Backend.Persistence.Data;
 using Backend.Persistence.Domain;
+using Microsoft.AspNetCore.Http.Features;
 using Microsoft.EntityFrameworkCore;
 
 namespace Backend.Api.Apis;
@@ -25,22 +26,45 @@ public static class WebhookEndpoints
         return app;
     }
 
-    private static async Task<IResult> Receive(long workspaceId, HttpRequest request, AppDbContext db, ISecretStore secrets, ILoggerFactory loggerFactory, CancellationToken ct)
+    private static async Task<IResult> Receive(long workspaceId, HttpRequest request, AppDbContext db, ISecretStore secrets, IConfiguration configuration, ILoggerFactory loggerFactory, CancellationToken ct)
     {
         var workspace = await db.Workspaces.SingleOrDefaultAsync(w => w.Id == workspaceId, ct);
         if (workspace is null) return Results.NotFound();
 
-        using var reader = new StreamReader(request.Body);
-        var body = await reader.ReadToEndAsync(ct);
+        // /webhooks/* is deliberately exempt from the session cookie (SessionMiddleware) - anyone on the
+        // Internet can POST here, signed or not. Cap the body Kestrel will accept *before* reading any
+        // of it, so an oversized or endless payload can't be used to exhaust memory/CPU before the
+        // signature is even checked (unsigned/invalid requests are the common case for abuse, and must
+        // be cheap to reject).
+        var maxBodyBytes = configuration.GetValue("Webhooks:MaxBodyBytes", 1_000_000);
+        var sizeFeature = request.HttpContext.Features.Get<IHttpMaxRequestBodySizeFeature>();
+        if (sizeFeature is not null && !sizeFeature.IsReadOnly) sizeFeature.MaxRequestBodySize = maxBodyBytes;
+
+        byte[] bodyBytes;
+        try
+        {
+            using var buffer = new MemoryStream();
+            await request.Body.CopyToAsync(buffer, ct);
+            bodyBytes = buffer.ToArray();
+        }
+        catch (Microsoft.AspNetCore.Http.BadHttpRequestException ex) when (ex.StatusCode == StatusCodes.Status413PayloadTooLarge)
+        {
+            return Results.StatusCode(StatusCodes.Status413PayloadTooLarge);
+        }
+
         var logger = loggerFactory.CreateLogger("WebhookEndpoints");
 
         try
         {
             if (workspace.Platform == WorkspacePlatform.Github)
             {
-                if (!await VerifyGitHubSignatureAsync(workspace, request, body, secrets, ct)) return Results.Unauthorized();
+                // Signature is computed over the exact bytes received, not a decode-then-re-encode
+                // round trip through string - avoids any chance of the comparison drifting from what
+                // GitHub actually signed for byte sequences that aren't clean UTF-8.
+                if (!await VerifyGitHubSignatureAsync(workspace, request, bodyBytes, secrets, ct)) return Results.Unauthorized();
                 var deliveryId = request.Headers["X-GitHub-Delivery"].FirstOrDefault();
                 var eventType = request.Headers["X-GitHub-Event"].FirstOrDefault() ?? "";
+                var body = Encoding.UTF8.GetString(bodyBytes);
                 await ProcessGitHubEventAsync(db, workspace, eventType, body, deliveryId, logger, ct);
             }
             else
@@ -67,7 +91,7 @@ public static class WebhookEndpoints
         return Results.StatusCode(StatusCodes.Status202Accepted);
     }
 
-    private static async Task<bool> VerifyGitHubSignatureAsync(Workspace workspace, HttpRequest request, string body, ISecretStore secrets, CancellationToken ct)
+    private static async Task<bool> VerifyGitHubSignatureAsync(Workspace workspace, HttpRequest request, byte[] bodyBytes, ISecretStore secrets, CancellationToken ct)
     {
         var header = request.Headers["X-Hub-Signature-256"].FirstOrDefault();
         if (string.IsNullOrEmpty(header) || !header.StartsWith("sha256=", StringComparison.OrdinalIgnoreCase)) return false;
@@ -78,7 +102,7 @@ public static class WebhookEndpoints
 
         try
         {
-            var expected = Convert.FromHexString(ComputeGitHubSignatureHex(secret, body));
+            var expected = ComputeGitHubSignature(secret, bodyBytes);
             var actual = Convert.FromHexString(header["sha256=".Length..]);
             return CryptographicOperations.FixedTimeEquals(expected, actual);
         }
@@ -88,10 +112,14 @@ public static class WebhookEndpoints
         }
     }
 
-    internal static string ComputeGitHubSignatureHex(string secret, string body)
+    /// <summary>Test-facing convenience overload (fixtures are always clean UTF-8 JSON strings) - production verification uses <see cref="ComputeGitHubSignature(string, byte[])"/> directly on the exact received bytes.</summary>
+    internal static string ComputeGitHubSignatureHex(string secret, string body) =>
+        Convert.ToHexString(ComputeGitHubSignature(secret, Encoding.UTF8.GetBytes(body))).ToLowerInvariant();
+
+    private static byte[] ComputeGitHubSignature(string secret, byte[] bodyBytes)
     {
         using var hmac = new HMACSHA256(Encoding.UTF8.GetBytes(secret));
-        return Convert.ToHexString(hmac.ComputeHash(Encoding.UTF8.GetBytes(body))).ToLowerInvariant();
+        return hmac.ComputeHash(bodyBytes);
     }
 
     private static async Task<bool> VerifyAdoBasicAuthAsync(Workspace workspace, HttpRequest request, ISecretStore secrets, CancellationToken ct)
