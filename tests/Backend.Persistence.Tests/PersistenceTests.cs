@@ -44,10 +44,10 @@ public sealed class PersistenceTests
         Assert.Contains("IX_spec_WorkspaceId_Path", indexes);
         Assert.Contains("IX_pipeline_instance_WorkspaceId_ExternalRef", indexes);
 
-        var migration = context.Database.SqlQueryRaw<string>(
-            "SELECT MigrationId AS Value FROM __EFMigrationsHistory")
-            .Single();
-        Assert.Equal("20260806010204_InitialCreate", migration);
+        var migrations = context.Database.SqlQueryRaw<string>(
+            "SELECT MigrationId AS Value FROM __EFMigrationsHistory ORDER BY MigrationId")
+            .ToList();
+        Assert.Equal(new[] { "20260806010204_InitialCreate", "20260808172246_AddActivePerfilCredentialUniqueIndex" }, migrations);
     }
 
     [Fact]
@@ -90,6 +90,39 @@ public sealed class PersistenceTests
 
         context.Add(new Assessment { WorkspaceId = 9999, ClientId = 9999, Content = "invalid" });
         Assert.Throws<DbUpdateException>(() => context.SaveChanges());
+    }
+
+    [Fact]
+    public void AtMostOneActivePerfilCredentialIsEnforcedPerWorkspaceAndPerfil()
+    {
+        var setup = CreateContext();
+        using var connection = setup.Connection;
+        using var context = setup.Context;
+        context.Database.Migrate();
+        var workspace = new Workspace { Name = "Workspace", Slug = "workspace", PlatformRef = "ref" };
+        context.Add(workspace);
+        context.SaveChanges();
+
+        context.Add(new PerfilCredential { WorkspaceId = workspace.Id, Perfil = Perfil.Dev, PlatformUsername = "a", SecretRef = "secret-a/value", Status = CredentialStatus.Active, CreatedAt = DateTime.UtcNow });
+        context.SaveChanges();
+
+        // A second active row for the same (workspace, perfil) must be rejected at the DB level -
+        // this is what actually protects against the read-then-write race CredentialEndpoints.Create
+        // has between checking for a previous active credential and inserting the new one.
+        context.Add(new PerfilCredential { WorkspaceId = workspace.Id, Perfil = Perfil.Dev, PlatformUsername = "b", SecretRef = "secret-b/value", Status = CredentialStatus.Active, CreatedAt = DateTime.UtcNow });
+        Assert.Throws<DbUpdateException>(() => context.SaveChanges());
+        context.ChangeTracker.Clear();
+
+        // A second row is fine once the first is revoked (only one Active-status row is constrained).
+        var toRevoke = context.PerfilCredentials.Single(c => c.WorkspaceId == workspace.Id && c.Perfil == Perfil.Dev);
+        toRevoke.Status = CredentialStatus.Revoked;
+        context.Add(new PerfilCredential { WorkspaceId = workspace.Id, Perfil = Perfil.Dev, PlatformUsername = "c", SecretRef = "secret-c/value", Status = CredentialStatus.Active, CreatedAt = DateTime.UtcNow });
+        context.SaveChanges();
+        Assert.Equal(2, context.PerfilCredentials.Count(c => c.WorkspaceId == workspace.Id));
+
+        // A different perfil in the same workspace is a different constraint bucket.
+        context.Add(new PerfilCredential { WorkspaceId = workspace.Id, Perfil = Perfil.Qa, PlatformUsername = "d", SecretRef = "secret-d/value", Status = CredentialStatus.Active, CreatedAt = DateTime.UtcNow });
+        context.SaveChanges();
     }
 
     [Fact]

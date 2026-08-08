@@ -196,4 +196,28 @@ public sealed class CredentialEndpointsTests
         Assert.Equal(HttpStatusCode.Unauthorized, (await client.PostAsJsonAsync("/workspaces/1/credenciais", new { perfil = "dev", platform_username = "x", token = "y" })).StatusCode);
         Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync("/workspaces/1/credenciais")).StatusCode);
     }
+
+    [Fact]
+    public async Task ConcurrentRegistrationsForTheSamePerfilNeverLeaveMoreThanOneActiveCredential()
+    {
+        // Security finding on PR #14: the read-check-then-revoke-then-insert in Create had no DB-level
+        // guarantee, so two concurrent registrations for the same (workspace, perfil) could both leave
+        // an "active" row. This doesn't assert a fixed pair of response codes (racing HTTP requests
+        // against a single SQLite file will not reliably land on one specific interleaving) - it
+        // asserts the invariant the fix actually has to hold regardless of how the race resolves: at
+        // most one active row, and every request either succeeded or was rejected, never silently lost.
+        using var factory = new CredentialApplicationFactory();
+        using var client = await AuthenticatedClient(factory);
+        var workspaceId = await CreateWorkspace(client);
+
+        var responses = await Task.WhenAll(
+            client.PostAsJsonAsync($"/workspaces/{workspaceId}/credenciais", new { perfil = "dev", platform_username = "racer-a", token = "token-a" }),
+            client.PostAsJsonAsync($"/workspaces/{workspaceId}/credenciais", new { perfil = "dev", platform_username = "racer-b", token = "token-b" }));
+
+        Assert.All(responses, r => Assert.True(r.StatusCode is HttpStatusCode.Created or HttpStatusCode.Conflict, $"unexpected status {r.StatusCode}"));
+
+        var list = await (await client.GetAsync($"/workspaces/{workspaceId}/credenciais")).Content.ReadFromJsonAsync<JsonElement>();
+        var activeCount = list.EnumerateArray().Count(item => item.GetProperty("status").GetString() == "active");
+        Assert.Equal(1, activeCount);
+    }
 }

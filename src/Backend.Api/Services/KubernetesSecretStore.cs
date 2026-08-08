@@ -11,7 +11,7 @@ namespace Backend.Api.Services;
 /// once the application is actually deployed (WBS item 17); this class is unit-tested only through the
 /// ISecretStore contract via a fake in Backend.Api.Tests, not against a real Kubernetes API server.
 /// </summary>
-public sealed class KubernetesSecretStore(IConfiguration configuration, ILogger<KubernetesSecretStore> logger) : ISecretStore
+public sealed class KubernetesSecretStore(IConfiguration configuration, IHostEnvironment environment, ILogger<KubernetesSecretStore> logger) : ISecretStore
 {
     private const string DataKey = "value";
     private IKubernetes? _client;
@@ -48,15 +48,26 @@ public sealed class KubernetesSecretStore(IConfiguration configuration, ILogger<
 
     private KubernetesClientConfiguration BuildConfig()
     {
-        try
+        // A service that writes tokens must not silently widen which cluster/context it talks to.
+        // BuildDefaultConfig() can load whatever kubeconfig happens to be on the process's environment
+        // (KUBECONFIG, ~/.kube/config), which outside a controlled dev/test box is an unreviewed,
+        // possibly unrelated cluster - fail closed there instead of falling back to it. Development and
+        // Testing are the only environments without a real in-cluster identity, so the fallback is
+        // scoped to exactly those.
+        if (environment.IsDevelopment() || environment.IsEnvironment("Testing"))
         {
-            return KubernetesClientConfiguration.InClusterConfig();
+            try
+            {
+                return KubernetesClientConfiguration.InClusterConfig();
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Not running in-cluster; falling back to the default kubeconfig for Kubernetes secret writes ({Environment} only)", environment.EnvironmentName);
+                return KubernetesClientConfiguration.BuildDefaultConfig();
+            }
         }
-        catch (Exception ex)
-        {
-            logger.LogWarning(ex, "Not running in-cluster; falling back to the default kubeconfig for Kubernetes secret writes");
-            return KubernetesClientConfiguration.BuildDefaultConfig();
-        }
+
+        return KubernetesClientConfiguration.InClusterConfig();
     }
 
     private static string SanitizeName(string raw)

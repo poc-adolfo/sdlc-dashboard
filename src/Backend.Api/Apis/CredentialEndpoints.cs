@@ -40,29 +40,44 @@ public static class CredentialEndpoints
             return Results.StatusCode(StatusCodes.Status502BadGateway);
         }
 
-        var previousActive = await db.PerfilCredentials
-            .Where(c => c.WorkspaceId == id && c.Perfil == perfil && c.Status == CredentialStatus.Active)
-            .ToListAsync(ct);
-        foreach (var previous in previousActive)
+        // Transaction pairs the revoke with the insert so a reader never observes zero active
+        // credentials between the two writes. It does not by itself stop two concurrent requests from
+        // both revoking the same previous row and both inserting a new "active" one - the unique
+        // filtered index (IX_perfil_credential_active_per_perfil) is what actually rejects the second
+        // writer; SQLite serializes the two transactions, and the second one's SaveChanges throws
+        // DbUpdateException on the constraint, which is reported as 409 below.
+        await using var transaction = await db.Database.BeginTransactionAsync(ct);
+        try
         {
-            previous.Status = CredentialStatus.Revoked;
-            previous.RotatedAt = now;
+            var previousActive = await db.PerfilCredentials
+                .Where(c => c.WorkspaceId == id && c.Perfil == perfil && c.Status == CredentialStatus.Active)
+                .ToListAsync(ct);
+            foreach (var previous in previousActive)
+            {
+                previous.Status = CredentialStatus.Revoked;
+                previous.RotatedAt = now;
+            }
+
+            var credential = new PerfilCredential
+            {
+                WorkspaceId = id,
+                Perfil = perfil,
+                PlatformUsername = request.PlatformUsername!.Trim(),
+                SecretRef = secretRef,
+                Scopes = string.IsNullOrWhiteSpace(request.Scopes) ? null : request.Scopes.Trim(),
+                Status = CredentialStatus.Active,
+                CreatedAt = now
+            };
+            db.PerfilCredentials.Add(credential);
+            await db.SaveChangesAsync(ct);
+            await transaction.CommitAsync(ct);
+
+            return Results.Created($"/workspaces/{id}/credenciais/{credential.Id}", Response(credential));
         }
-
-        var credential = new PerfilCredential
+        catch (DbUpdateException)
         {
-            WorkspaceId = id,
-            Perfil = perfil,
-            PlatformUsername = request.PlatformUsername!.Trim(),
-            SecretRef = secretRef,
-            Scopes = string.IsNullOrWhiteSpace(request.Scopes) ? null : request.Scopes.Trim(),
-            Status = CredentialStatus.Active,
-            CreatedAt = now
-        };
-        db.PerfilCredentials.Add(credential);
-        await db.SaveChangesAsync(ct);
-
-        return Results.Created($"/workspaces/{id}/credenciais/{credential.Id}", Response(credential));
+            return Results.Conflict(new { error = "a credential for this perfil was registered concurrently; retry" });
+        }
     }
 
     private static async Task<IResult> List(long id, AppDbContext db, CancellationToken ct)
