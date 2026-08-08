@@ -1,6 +1,5 @@
-using System.Net.Http.Headers;
-using System.Text.Json;
 using System.Text.Json.Serialization;
+using Backend.Api.Services;
 using Backend.Persistence.Data;
 using Backend.Persistence.Domain;
 using Microsoft.EntityFrameworkCore;
@@ -76,7 +75,7 @@ public static class AssessmentEndpoints
         return Results.Ok(AssessmentResponse.From(assessment));
     }
 
-    private static async Task<IResult> Conclude(long id, long aid, AppDbContext db, IHttpClientFactory clients, IConfiguration configuration, ILoggerFactory loggerFactory, CancellationToken ct)
+    private static async Task<IResult> Conclude(long id, long aid, AppDbContext db, AnalystDorGate gate, IConfiguration configuration, CancellationToken ct)
     {
         // Keep the ownership check explicit: a mismatched workspace must look identical to a missing assessment.
         var assessment = await db.Assessments.SingleOrDefaultAsync(a => a.Id == aid, ct);
@@ -85,65 +84,16 @@ public static class AssessmentEndpoints
         if (maxContentLength <= 0) maxContentLength = 10000;
         if (assessment.Content.Length > maxContentLength)
             return Results.UnprocessableEntity(new { errors = new[] { $"content: maximum length is {maxContentLength} characters" } });
-        var baseUrl = configuration["Analista:ApiServerBaseUrl"];
-        if (string.IsNullOrWhiteSpace(baseUrl))
-        {
-            loggerFactory.CreateLogger("AssessmentEndpoints").LogError("Analista:ApiServerBaseUrl is not configured");
-            return Results.Problem("Analista:ApiServerBaseUrl is not configured", statusCode: StatusCodes.Status502BadGateway);
-        }
-        using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(new Uri(baseUrl.TrimEnd('/') + "/"), "v1/chat/completions"));
-        request.Content = JsonContent.Create(new { model = "analista", messages = new[] { new { role = "user", content = assessment.Content } } });
-        var apiKey = configuration["Analista:ApiServerApiKey"];
-        if (!string.IsNullOrWhiteSpace(apiKey)) request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
-        try
-        {
-            using var response = await clients.CreateClient("Analista").SendAsync(request, ct);
-            response.EnsureSuccessStatusCode();
-            using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
-            var text = document.RootElement.GetProperty("choices")[0].GetProperty("message").GetProperty("content").GetString() ?? string.Empty;
-            var gate = ParseLastGateObject(text);
-            if (gate is null) return Results.StatusCode(StatusCodes.Status502BadGateway);
-            if (!gate.Value.Attended) return Results.Ok(new { concluido = false, pendencias = gate.Value.Pending });
-            assessment.Status = AssessmentStatus.Concluido;
-            var workspace = await db.Workspaces.SingleAsync(w => w.Id == id, ct);
-            workspace.ClientId = assessment.ClientId;
-            await db.SaveChangesAsync(ct);
-            return Results.Ok(new { concluido = true });
-        }
-        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException or KeyNotFoundException)
-        {
-            loggerFactory.CreateLogger("AssessmentEndpoints").LogWarning(ex, "Analista DoR gate failed for assessment {AssessmentId}", aid);
-            return Results.StatusCode(StatusCodes.Status502BadGateway);
-        }
-    }
 
-    internal static (bool Attended, List<string> Pending)? ParseLastGateObject(string text)
-    {
-        for (var end = text.Length; end > 0; end--)
-        {
-            var start = text.LastIndexOf('{', end - 1);
-            if (start < 0) break;
-            try
-            {
-                using var json = JsonDocument.Parse(text[start..end]);
-                var root = json.RootElement;
-                if (!root.TryGetProperty("dor_atendido", out var attended) ||
-                    (attended.ValueKind != JsonValueKind.True && attended.ValueKind != JsonValueKind.False) ||
-                    !root.TryGetProperty("pendencias", out var pending) ||
-                    pending.ValueKind != JsonValueKind.Array)
-                    continue;
-                var values = new List<string>();
-                foreach (var item in pending.EnumerateArray())
-                {
-                    if (item.ValueKind != JsonValueKind.String) return null;
-                    values.Add(item.GetString()!);
-                }
-                return (attended.GetBoolean(), values);
-            }
-            catch (JsonException) { }
-            catch (InvalidOperationException) { return null; }
-        }
-        return null;
+        var dor = await gate.CheckAsync(assessment.Content, ct);
+        if (dor is null) return Results.StatusCode(StatusCodes.Status502BadGateway);
+        if (!dor.Attended) return Results.Ok(new { concluido = false, pendencias = dor.Pending });
+
+        assessment.Status = AssessmentStatus.Concluido;
+        var workspace = await db.Workspaces.SingleAsync(w => w.Id == id, ct);
+        workspace.ClientId = assessment.ClientId;
+        await db.SaveChangesAsync(ct);
+        return Results.Ok(new { concluido = true });
     }
 }
 

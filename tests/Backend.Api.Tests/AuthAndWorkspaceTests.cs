@@ -35,10 +35,11 @@ public sealed class TestApplicationFactory : WebApplicationFactory<Program>
     protected override void Dispose(bool disposing)
     {
         base.Dispose(disposing);
+        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
         foreach (var suffix in new[] { "", "-shm", "-wal" })
         {
             var path = _databasePath + suffix;
-            if (File.Exists(path)) File.Delete(path);
+            try { if (File.Exists(path)) File.Delete(path); } catch (IOException) { }
         }
     }
 }

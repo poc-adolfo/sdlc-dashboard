@@ -209,7 +209,7 @@ public sealed class WorkspaceApiFactory : WebApplicationFactory<Program>
         var sessions = Services.GetRequiredService<Backend.Api.Auth.SessionService>();
         client.DefaultRequestHeaders.Add("Cookie", "sdlc_session=" + sessions.Create("operator", DateTimeOffset.UtcNow));
     }
-    protected override void Dispose(bool disposing) { base.Dispose(disposing); if (File.Exists(path)) File.Delete(path); }
+    protected override void Dispose(bool disposing) { base.Dispose(disposing); Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools(); try { if (File.Exists(path)) File.Delete(path); } catch (IOException) { } }
 }
 
 public sealed record WorkspaceResponse(long Id, string Name, string Slug, string Platform, string PlatformRef, long? ClientId, string Status, DateTime CreatedAt);

@@ -26,11 +26,11 @@ public sealed class AssessmentApiFactory : WebApplicationFactory<Program>
         .ConfigureAppConfiguration((_, c) => c.AddInMemoryCollection(new Dictionary<string,string?> {
             ["Authentication:Username"]="operator", ["Authentication:Password"] = TestPassword,
             ["Authentication:SigningKey"] = TestSigningKey, ["Authentication:SecureCookie"]="false",
-            ["ConnectionStrings:Default"]=$"Data Source={path}", ["Analista:ApiServerBaseUrl"]="http://analista.test",
+            ["ConnectionStrings:Default"]=$"Data Source={path}", ["Analista:ApiServerBaseUrl"]="https://analista.test",
             ["Analista:ApiServerApiKey"] = ApiKey, ["Analista:TimeoutSeconds"] = "1" }))
         .ConfigureServices(s => s.AddHttpClient("Analista").ConfigurePrimaryHttpMessageHandler(() => Handler));
     protected override void ConfigureClient(HttpClient client) => client.DefaultRequestHeaders.Add("Cookie", "sdlc_session=" + Services.GetRequiredService<SessionService>().Create("operator", DateTimeOffset.UtcNow));
-    protected override void Dispose(bool disposing) { base.Dispose(disposing); foreach(var x in new[]{path,path+"-wal",path+"-shm"}) if(File.Exists(x)) File.Delete(x); }
+    protected override void Dispose(bool disposing) { base.Dispose(disposing); Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools(); foreach(var x in new[]{path,path+"-wal",path+"-shm"}) try { if(File.Exists(x)) File.Delete(x); } catch (IOException) { } }
 }
 public sealed class FakeAnalistaHandler : HttpMessageHandler
 {
