@@ -29,16 +29,16 @@ public static class WebhookEndpoints
 
     private static async Task<IResult> Receive(long workspaceId, HttpRequest request, AppDbContext db, ISecretStore secrets, IConfiguration configuration, ILoggerFactory loggerFactory, CancellationToken ct)
     {
-        // Security review on PR #15: looking the workspace up before any auth check lets a caller probe
-        // which numeric ids exist (404 vs. proceeding further) and spends a DB round-trip before the
-        // request is proven legitimate. Both are real, but not fixable without weakening the
-        // per-workspace webhook secret design (GitHub's AppSecretRef is looked up *from* the workspace
-        // row - there is no secret to check before knowing which workspace this is, short of a single
-        // shared secret across all workspaces, which is a bigger step back). The rate limiter below
-        // bounds the cost of both; full mitigation is out of scope for this phase, consistent with the
-        // single-tenant-session trade-off already accepted in Program.cs.
+        // Security review on PR #15: a distinguishable 404-for-missing-workspace vs. 401-for-bad-
+        // signature let a caller enumerate valid workspace ids by response code alone. Both cases now
+        // return the same 401, so a nonexistent id is indistinguishable from a wrong/missing signature.
+        // The DB round-trip itself still happens either way (there is no secret to check before knowing
+        // which workspace this is - GitHub's AppSecretRef is looked up *from* the workspace row, short
+        // of a single shared secret across all workspaces, which would be a bigger step back); the rate
+        // limiter below bounds the cost of that, consistent with the single-tenant-session trade-off
+        // already accepted in Program.cs.
         var workspace = await db.Workspaces.SingleOrDefaultAsync(w => w.Id == workspaceId, ct);
-        if (workspace is null) return Results.NotFound();
+        if (workspace is null) return Results.Unauthorized();
 
         // /webhooks/* is deliberately exempt from the session cookie (SessionMiddleware) - anyone on the
         // Internet can POST here, signed or not. Cap the body Kestrel will accept *before* reading any
