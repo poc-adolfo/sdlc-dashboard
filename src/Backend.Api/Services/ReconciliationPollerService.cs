@@ -60,25 +60,35 @@ public sealed class ReconciliationPollerService(IServiceScopeFactory scopeFactor
         foreach (var (number, _) in issues)
         {
             if (await db.PipelineInstances.AnyAsync(p => p.WorkspaceId == workspace.Id && p.ExternalRef == number, ct)) continue;
+            await TryCreatePipelineInstanceAsync(db, workspace.Id, number, ct);
+        }
+    }
 
-            db.PipelineInstances.Add(new PipelineInstance
-            {
-                WorkspaceId = workspace.Id,
-                FaseAtual = PipelinePhase.Requisitos,
-                GateStatus = GateStatus.Approved,
-                ExternalRef = number,
-                CreatedAt = DateTime.UtcNow
-            });
-            try
-            {
-                await db.SaveChangesAsync(ct);
-            }
-            catch (DbUpdateException)
-            {
-                // The unique (WorkspaceId, ExternalRef) index caught a race with something else
-                // (webhook, or another reconciliation pass) creating the same row concurrently.
-                db.ChangeTracker.Clear();
-            }
+    internal static async Task TryCreatePipelineInstanceAsync(AppDbContext db, long workspaceId, string externalRef, CancellationToken ct)
+    {
+        db.PipelineInstances.Add(new PipelineInstance
+        {
+            WorkspaceId = workspaceId,
+            FaseAtual = PipelinePhase.Requisitos,
+            GateStatus = GateStatus.Approved,
+            ExternalRef = externalRef,
+            CreatedAt = DateTime.UtcNow
+        });
+        try
+        {
+            await db.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateException)
+        {
+            db.ChangeTracker.Clear();
+            // Only treat this as the expected unique (WorkspaceId, ExternalRef) race - something else
+            // (webhook, or another reconciliation pass) creating the same row concurrently - if that
+            // row is now confirmed to exist. A DbUpdateException for any other reason (schema/
+            // constraint mismatch, DB unavailable, ...) must not be swallowed as if it were that race:
+            // rethrow so it surfaces via ExecuteAsync's error log instead of the missing
+            // pipeline_instance silently never getting recreated.
+            if (!await db.PipelineInstances.AnyAsync(p => p.WorkspaceId == workspaceId && p.ExternalRef == externalRef, ct))
+                throw;
         }
     }
 

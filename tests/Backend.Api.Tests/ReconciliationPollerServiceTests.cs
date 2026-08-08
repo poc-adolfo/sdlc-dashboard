@@ -8,6 +8,7 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.Configuration;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -238,5 +239,49 @@ public sealed class ReconciliationPollerServiceTests
         var ex = await Record.ExceptionAsync(() => service.RunOnceAsync(CancellationToken.None));
 
         Assert.Null(ex);
+    }
+}
+
+public sealed class TryCreatePipelineInstanceAsyncTests
+{
+    private static AppDbContext CreateMigratedContext(out Microsoft.Data.Sqlite.SqliteConnection connection)
+    {
+        connection = new Microsoft.Data.Sqlite.SqliteConnection("Data Source=:memory:");
+        connection.Open();
+        var db = new AppDbContext(new Microsoft.EntityFrameworkCore.DbContextOptionsBuilder<AppDbContext>().UseSqlite(connection).Options);
+        db.Database.Migrate();
+        return db;
+    }
+
+    [Fact]
+    public async Task ConfirmedUniqueIndexRaceIsSwallowed()
+    {
+        using var db = CreateMigratedContext(out var connection);
+        using var _ = connection;
+        var workspace = new Backend.Persistence.Domain.Workspace { Name = "W", Slug = "w", PlatformRef = "acme/platform" };
+        db.Workspaces.Add(workspace);
+        await db.SaveChangesAsync();
+        // Simulates the losing side of a real race: something else already created this row.
+        db.PipelineInstances.Add(new PipelineInstance { WorkspaceId = workspace.Id, ExternalRef = "7", FaseAtual = PipelinePhase.Requisitos, GateStatus = GateStatus.Approved, CreatedAt = DateTime.UtcNow });
+        await db.SaveChangesAsync();
+
+        var ex = await Record.ExceptionAsync(() => ReconciliationPollerService.TryCreatePipelineInstanceAsync(db, workspace.Id, "7", CancellationToken.None));
+
+        Assert.Null(ex);
+    }
+
+    [Fact]
+    public async Task GenuinePersistenceFailureIsNotSwallowedAsTheBenignUniqueIndexRace()
+    {
+        // Revisor finding on PR #16: catching DbUpdateException unconditionally treated any
+        // persistence failure as the expected (WorkspaceId, ExternalRef) race. Here the workspace
+        // never actually exists in the DB (a phantom id), so the insert fails on the FK constraint,
+        // not the unique index - this must propagate, not be swallowed as if a concurrent pass had
+        // already recreated the row.
+        using var db = CreateMigratedContext(out var connection);
+        using var _ = connection;
+
+        await Assert.ThrowsAsync<Microsoft.EntityFrameworkCore.DbUpdateException>(() =>
+            ReconciliationPollerService.TryCreatePipelineInstanceAsync(db, workspaceId: 999999, "7", CancellationToken.None));
     }
 }
