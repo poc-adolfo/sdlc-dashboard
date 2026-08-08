@@ -174,6 +174,36 @@ public sealed class SpecUsEndpointsIntegrationTests
     }
 
     [Fact]
+    public async Task GitHubPublishAppliesTheSdlcPipelineLabelAndRecordsASpecPublication()
+    {
+        // Security review on PR #17: ReconciliationPollerService no longer trusts anything read back
+        // from GitHub (an Issue's label/body are writable by any repo collaborator) - it trusts only a
+        // spec_publication row, which only this session-authenticated endpoint can create
+        // (ReconciliationPollerServiceTests). This is the other half of that contract: "Subir US" must
+        // actually write that row when it publishes.
+        using var factory = new SpecUsApplicationFactory();
+        factory.Handler.On(r => r.Method == HttpMethod.Get && r.RequestUri!.Host == "api.github.com" && r.RequestUri.AbsolutePath.Contains("/contents/"), _ => GitHubContentResponse(SpecMarkdown));
+        factory.Handler.On(r => r.RequestUri!.Host == "analista.test", _ => AnalistaResponse(DorApproved));
+        factory.Handler.On(r => r.Method == HttpMethod.Post && r.RequestUri!.AbsolutePath.EndsWith("/issues"), _ => new HttpResponseMessage(HttpStatusCode.Created) { Content = JsonContent.Create(new { number = 42 }) });
+
+        using var client = await AuthenticatedClient(factory);
+        var workspaceId = await CreateGitHubWorkspace(client);
+
+        var response = await client.PostAsync($"/workspaces/{workspaceId}/specs/docs/spec.md/subir-us", content: null);
+
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        var issueCall = Assert.Single(factory.Handler.Captured, c => c.Uri.AbsolutePath.EndsWith("/issues"));
+        var issuePayload = JsonDocument.Parse(issueCall.Body!).RootElement;
+        var labels = issuePayload.GetProperty("labels").EnumerateArray().Select(x => x.GetString()).ToList();
+        Assert.Contains("sdlc-pipeline", labels);
+
+        using var scope = factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var publication = Assert.Single(db.SpecPublications.Where(p => p.WorkspaceId == workspaceId));
+        Assert.Equal("42", publication.ExternalRef);
+    }
+
+    [Fact]
     public async Task AzureDevOpsPublishSucceedsAndPersistsWorkItemIdAsExternalRef()
     {
         using var factory = new SpecUsApplicationFactory();

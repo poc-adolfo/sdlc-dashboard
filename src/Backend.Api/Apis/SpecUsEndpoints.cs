@@ -47,6 +47,15 @@ public static class SpecUsEndpoints
         // Spec.Path in the index (SpecListingEndpoints) is always the full repo-relative path, same as
         // fullPath here - not specPath, which is only the route segment after specs_path is stripped.
         var spec = await db.Specs.SingleOrDefaultAsync(x => x.WorkspaceId == id && x.Path == fullPath, ct);
+
+        // Security review on PR #17: an Issue's label/body is writable by anyone with repo triage
+        // permission, so ReconciliationPollerService can't treat either as proof "Subir US" created
+        // that Issue. This row is the actual proof - only this session-authenticated endpoint can ever
+        // write one, and it's saved *before* the PipelineInstance insert below so it survives even if
+        // that insert never completes (the exact failure reconciliation exists to recover from).
+        db.SpecPublications.Add(new SpecPublication { WorkspaceId = id, SpecId = spec?.Id, ExternalRef = external, CreatedAt = DateTime.UtcNow });
+        await db.SaveChangesAsync(ct);
+
         var pipeline = new PipelineInstance { WorkspaceId = id, SpecId = spec?.Id, FaseAtual = PipelinePhase.Requisitos, GateStatus = GateStatus.Approved, ExternalRef = external, CreatedAt = DateTime.UtcNow };
         db.PipelineInstances.Add(pipeline);
         await db.SaveChangesAsync(ct);
@@ -60,9 +69,12 @@ public static class SpecUsEndpoints
             HttpRequestMessage request;
             if (workspace.Platform == WorkspacePlatform.Github)
             {
+                // The label is a discovery filter only (which Issues to even look at), not a trust
+                // signal - it's just as writable by any repo collaborator as the label. Authorization
+                // comes from the SpecPublication row saved in Handle, never from Issue content.
                 request = new HttpRequestMessage(HttpMethod.Post, $"https://api.github.com/repos/{workspace.PlatformRef}/issues")
                 {
-                    Content = JsonContent.Create(new { title = "US: " + title, body })
+                    Content = JsonContent.Create(new { title = "US: " + title, body, labels = new[] { "sdlc-pipeline" } })
                 };
             }
             else
