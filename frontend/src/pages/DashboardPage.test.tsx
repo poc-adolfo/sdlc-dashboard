@@ -16,11 +16,11 @@ function renderPage() {
   );
 }
 
-function WorkspaceSwitcher({ to }: { to: number }) {
+function WorkspaceSwitcher({ to, label = 'Switch workspace' }: { to: number | null; label?: string }) {
   const { setWorkspaceId } = useWorkspace();
   return (
     <button type="button" onClick={() => setWorkspaceId(to)}>
-      Switch workspace
+      {label}
     </button>
   );
 }
@@ -205,5 +205,52 @@ describe('DashboardPage', () => {
     const dev = screen.getByText('Dev').closest('.phase-count');
     expect(dev).toHaveTextContent('3');
     expect(dev).not.toHaveTextContent('99');
+  });
+
+  it('discards a stale response for a workspace deselected (set to null) in the meantime', async () => {
+    // QA finding on PR #25: load() returned before bumping loadSeq.current when workspaceId was null,
+    // so deselecting the workspace never invalidated whatever load was still in flight for the
+    // previous one - reselecting the same workspace afterward could then have its fresh response
+    // clobbered by that stale one resolving even later.
+    let resolveFirstLoad!: (response: Response) => void;
+    const firstLoadPending = new Promise<Response>((resolve) => {
+      resolveFirstLoad = resolve;
+    });
+    let callCount = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url !== '/workspaces/7/dashboard') throw new Error(`unexpected request: ${url}`);
+      callCount += 1;
+      if (callCount === 1) return firstLoadPending;
+      return jsonResponse(200, { contagens: { Dev: 3 }, gates_pendentes: [] });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(
+      <WorkspaceProvider>
+        <WorkspaceSwitcher to={null} label="Deselect" />
+        <WorkspaceSwitcher to={7} label="Reselect 7" />
+        <DashboardPage />
+      </WorkspaceProvider>,
+    );
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+
+    await userEvent.click(screen.getByRole('button', { name: 'Deselect' }));
+    expect(screen.getByText('Selecione um workspace acima para começar.')).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Reselect 7' }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    await waitFor(() => {
+      const dev = screen.getByText('Dev').closest('.phase-count');
+      expect(dev).toHaveTextContent('3');
+    });
+
+    // The very first (now doubly-stale) request finally resolves - it must not overwrite the fresh
+    // second load's data.
+    resolveFirstLoad(jsonResponse(200, { contagens: { Dev: 999 }, gates_pendentes: [] }));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const dev = screen.getByText('Dev').closest('.phase-count');
+    expect(dev).toHaveTextContent('3');
+    expect(dev).not.toHaveTextContent('999');
   });
 });

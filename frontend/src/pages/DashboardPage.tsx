@@ -40,8 +40,11 @@ export function DashboardPage() {
   const loadSeq = useRef(0);
 
   const load = useCallback(async () => {
-    if (workspaceId === null) return;
+    // QA finding on PR #25: bump the sequence *before* the early return, not after - otherwise
+    // deselecting the workspace (workspaceId becomes null) never invalidates whatever load was still
+    // in flight for the previous one, and its late response could still pass the seq check below.
     const seq = ++loadSeq.current;
+    if (workspaceId === null) return;
     setLoading(true);
     setError(null);
     try {
