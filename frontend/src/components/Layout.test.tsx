@@ -54,27 +54,62 @@ describe('Layout', () => {
     expect(screen.getByRole('link', { name: 'Specs' })).toHaveClass('app-tab--active');
   });
 
-  it('the workspace picker persists the entered id for other screens to read', async () => {
+  it('the workspace picker lists workspaces from GET /workspaces and persists the selected id', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(200, [
+      { id: 1, name: 'Acme' },
+      { id: 2, name: 'Beta' },
+    ])));
     renderLayout();
     await screen.findByText('Assessment screen');
 
-    await userEvent.type(screen.getByLabelText('Workspace'), '42');
-    await userEvent.click(screen.getByRole('button', { name: 'Usar' }));
+    const select = await screen.findByLabelText('Workspace');
+    await waitFor(() => expect(screen.getByRole('option', { name: 'Beta' })).toBeInTheDocument());
 
-    expect(localStorage.getItem('sdlc-dashboard:workspaceId')).toBe('42');
+    await userEvent.selectOptions(select, 'Beta');
+
+    expect(localStorage.getItem('sdlc-dashboard:workspaceId')).toBe('2');
   });
 
-  it('the workspace picker clears the stored id when submitted blank', async () => {
+  it('the workspace picker preselects a previously stored workspace id', async () => {
     localStorage.setItem('sdlc-dashboard:workspaceId', '7');
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(200, [{ id: 7, name: 'Stored Workspace' }])));
     renderLayout();
     await screen.findByText('Assessment screen');
 
-    const input = screen.getByLabelText('Workspace');
-    expect(input).toHaveValue('7'); // reflects what was already selected
-    await userEvent.clear(input);
-    await userEvent.click(screen.getByRole('button', { name: 'Usar' }));
+    const select = await screen.findByLabelText('Workspace');
+    await waitFor(() => expect(select).toHaveValue('7'));
+  });
 
-    expect(localStorage.getItem('sdlc-dashboard:workspaceId')).toBeNull();
+  it('"Novo" opens a form that creates a workspace and selects it', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url === '/workspaces' && init?.method === 'POST') {
+        return jsonResponse(201, { id: 9, name: 'New Workspace' });
+      }
+      return jsonResponse(200, []);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    renderLayout();
+    await screen.findByText('Assessment screen');
+
+    await userEvent.click(screen.getByRole('button', { name: 'Novo' }));
+    await userEvent.type(screen.getByLabelText('Nome'), 'New Workspace');
+    await userEvent.type(screen.getByLabelText('Repositório/Projeto'), 'acme/new-workspace');
+    await userEvent.click(screen.getByRole('button', { name: 'Criar' }));
+
+    await waitFor(() => expect(localStorage.getItem('sdlc-dashboard:workspaceId')).toBe('9'));
+    expect(screen.getByLabelText('Workspace')).toHaveValue('9');
+    expect(screen.queryByLabelText('Nome')).not.toBeInTheDocument(); // form closes after creating
+  });
+
+  it('"Cancelar" closes the new-workspace form without creating anything', async () => {
+    renderLayout();
+    await screen.findByText('Assessment screen');
+
+    await userEvent.click(screen.getByRole('button', { name: 'Novo' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Cancelar' }));
+
+    expect(screen.queryByLabelText('Nome')).not.toBeInTheDocument();
   });
 
   it('"Sair" calls POST /auth/logout', async () => {

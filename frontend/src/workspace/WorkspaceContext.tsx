@@ -16,11 +16,9 @@ function readStoredWorkspaceId(): number | null {
   return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
 }
 
-// There is no workspace list/picker endpoint or screen in this WBS (frontend-operacional-sdlc-hermes.md
-// only defines assessment/specs/dashboard/credenciais screens - seção 12, items 11-14) - every page
-// operates within a single workspace whose id the operator already knows. This just remembers that id
-// across tabs and reloads within the same browser, so item 11 doesn't need to invent workspace CRUD UI
-// to be usable end to end.
+// The workspace switcher (Layout.tsx) picks from GET /workspaces, but still only holds an id here -
+// this context doesn't need the full workspace record, just to remember the selection across tabs and
+// reloads within the same browser.
 export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const [workspaceId, setWorkspaceIdState] = useState<number | null>(() => readStoredWorkspaceId());
 
