@@ -199,7 +199,7 @@ describe('AssessmentPage', () => {
     await waitFor(() => expect(textarea).toHaveValue('texto editado'));
   });
 
-  it('shows a success message when Concluir reports dor_atendido: true', async () => {
+  it('shows a success message when Concluir succeeds, without calling any Hermes profile', async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === 'string' ? input : input.toString();
       if (url.startsWith('/clients?q=')) return jsonResponse(200, [{ id: 1, name: 'Acme Corp' }]);
@@ -215,12 +215,12 @@ describe('AssessmentPage', () => {
     expect(await screen.findByText('Assessment concluído.')).toBeInTheDocument();
   });
 
-  it('shows the pendências inline when Concluir reports dor_atendido: false', async () => {
+  it('shows a retry-friendly error when Concluir fails', async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === 'string' ? input : input.toString();
       if (url.startsWith('/clients?q=')) return jsonResponse(200, [{ id: 1, name: 'Acme Corp' }]);
       if (url === '/workspaces/7/assessments' && init?.method === 'POST') return jsonResponse(200, { id: 42, workspaceId: 7, clientId: 1, content: DEFAULT_CONTENT, status: 'em_andamento' });
-      if (url === '/workspaces/7/assessments/42/concluir') return jsonResponse(200, { concluido: false, pendencias: ['falta stack utilizada'] });
+      if (url === '/workspaces/7/assessments/42/concluir') return jsonResponse(500, {});
       throw new Error(`unexpected request: ${url}`);
     });
     vi.stubGlobal('fetch', fetchMock);
@@ -228,24 +228,7 @@ describe('AssessmentPage', () => {
 
     await userEvent.click(screen.getByRole('button', { name: 'Concluir' }));
 
-    expect(await screen.findByText('falta stack utilizada')).toBeInTheDocument();
-    expect(screen.queryByText('Assessment concluído.')).not.toBeInTheDocument();
-  });
-
-  it('shows a retry-friendly error when the Analista gate is unreachable (502)', async () => {
-    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = typeof input === 'string' ? input : input.toString();
-      if (url.startsWith('/clients?q=')) return jsonResponse(200, [{ id: 1, name: 'Acme Corp' }]);
-      if (url === '/workspaces/7/assessments' && init?.method === 'POST') return jsonResponse(200, { id: 42, workspaceId: 7, clientId: 1, content: DEFAULT_CONTENT, status: 'em_andamento' });
-      if (url === '/workspaces/7/assessments/42/concluir') return jsonResponse(502, {});
-      throw new Error(`unexpected request: ${url}`);
-    });
-    vi.stubGlobal('fetch', fetchMock);
-    await selectExistingClientAndLoadAssessment(fetchMock);
-
-    await userEvent.click(screen.getByRole('button', { name: 'Concluir' }));
-
-    expect(await screen.findByText('O serviço do Analista está indisponível. Tente novamente mais tarde.')).toBeInTheDocument();
+    expect(await screen.findByText('Não foi possível concluir o assessment. Tente novamente.')).toBeInTheDocument();
   });
 
   it('"trocar" returns to the client picker', async () => {
