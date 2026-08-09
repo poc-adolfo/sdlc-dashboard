@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { api, ApiError } from '../api/client';
 import { useWorkspace } from '../workspace/WorkspaceContext';
 
@@ -19,11 +19,20 @@ type SelectedClient = { kind: 'existing'; id: number; name: string } | { kind: '
 
 type ConcludeResult = { concluido: true } | { concluido: false; pendencias: string[] };
 
+type SearchState = 'idle' | 'loading' | 'success' | 'error';
+
 function ClientPicker({ workspaceId, onAssessmentReady }: { workspaceId: number; onAssessmentReady: (assessment: Assessment, client: SelectedClient) => void }) {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<ClientOption[]>([]);
+  const [searchState, setSearchState] = useState<SearchState>('idle');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // QA finding on PR #22: a naive debounce only cancels the *timer*, not an already-in-flight request -
+  // a slower response for an earlier keystroke (e.g. "Ac") can still land after a faster response for a
+  // later one ("Acme") and silently overwrite it with stale results. Bumped on every search this effect
+  // starts (not just ones that actually fire past the debounce) so a response can tell whether it's
+  // still the latest.
+  const searchSeq = useRef(0);
 
   // seção 5.1: combobox "buscar ou criar" - searches as the operator types, debounced so every
   // keystroke doesn't fire a request.
@@ -31,10 +40,25 @@ function ClientPicker({ workspaceId, onAssessmentReady }: { workspaceId: number;
     const trimmed = query.trim();
     if (trimmed.length === 0) {
       setResults([]);
+      setSearchState('idle');
+      searchSeq.current += 1;
       return;
     }
+    setSearchState('loading');
+    const seq = ++searchSeq.current;
     const timer = setTimeout(() => {
-      api.get<ClientOption[]>(`/clients?q=${encodeURIComponent(trimmed)}`).then(setResults, () => setResults([]));
+      api.get<ClientOption[]>(`/clients?q=${encodeURIComponent(trimmed)}`).then(
+        (data) => {
+          if (seq !== searchSeq.current) return; // a newer search has since started - discard
+          setResults(data);
+          setSearchState('success');
+        },
+        () => {
+          if (seq !== searchSeq.current) return;
+          setResults([]);
+          setSearchState('error');
+        },
+      );
     }, 300);
     return () => clearTimeout(timer);
   }, [query]);
@@ -55,6 +79,11 @@ function ClientPicker({ workspaceId, onAssessmentReady }: { workspaceId: number;
 
   const trimmedQuery = query.trim();
   const exactMatch = results.some((r) => r.name.toLowerCase() === trimmedQuery.toLowerCase());
+  // QA finding on PR #22: offering "criar novo cliente" while the search is still pending, or after it
+  // failed, risks creating a duplicate client during what might just be a transient outage or an
+  // answer that hasn't arrived yet - only a *completed, successful* search with no exact match may
+  // offer it.
+  const canOfferCreate = searchState === 'success' && trimmedQuery.length > 0 && !exactMatch;
 
   return (
     <div>
@@ -66,6 +95,8 @@ function ClientPicker({ workspaceId, onAssessmentReady }: { workspaceId: number;
         placeholder="Buscar cliente..."
         disabled={submitting}
       />
+      {searchState === 'loading' && <p role="status">Buscando...</p>}
+      {searchState === 'error' && <p role="alert">Não foi possível buscar clientes. Tente novamente.</p>}
       <ul className="client-results">
         {results.map((client) => (
           <li key={client.id}>
@@ -74,7 +105,7 @@ function ClientPicker({ workspaceId, onAssessmentReady }: { workspaceId: number;
             </button>
           </li>
         ))}
-        {trimmedQuery.length > 0 && !exactMatch && (
+        {canOfferCreate && (
           <li>
             <button type="button" onClick={() => choose({ kind: 'new', name: trimmedQuery })} disabled={submitting}>
               Criar novo cliente: "{trimmedQuery}"

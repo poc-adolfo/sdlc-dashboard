@@ -76,6 +76,85 @@ describe('AssessmentPage', () => {
     expect(await screen.findByText('Nova Empresa')).toBeInTheDocument();
   });
 
+  it('does not offer to create a client while the search is still pending', async () => {
+    let resolveSearch!: (response: Response) => void;
+    const pending = new Promise<Response>((resolve) => {
+      resolveSearch = resolve;
+    });
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.startsWith('/clients?q=')) return pending;
+      throw new Error(`unexpected request: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderPage();
+    await userEvent.type(screen.getByLabelText('Cliente'), 'Acme');
+
+    await screen.findByRole('status'); // "Buscando..." - proves the debounced request actually started
+    expect(screen.queryByRole('button', { name: /Criar novo cliente/ })).not.toBeInTheDocument();
+
+    resolveSearch(jsonResponse(200, []));
+    expect(await screen.findByRole('button', { name: 'Criar novo cliente: "Acme"' })).toBeInTheDocument();
+  });
+
+  it('does not offer to create a client when the search itself fails', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.startsWith('/clients?q=')) return jsonResponse(500, {});
+      throw new Error(`unexpected request: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderPage();
+    await userEvent.type(screen.getByLabelText('Cliente'), 'Acme');
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Não foi possível buscar clientes');
+    expect(screen.queryByRole('button', { name: /Criar novo cliente/ })).not.toBeInTheDocument();
+  });
+
+  it('discards a stale, out-of-order search response instead of overwriting newer results', async () => {
+    const deferred: Record<string, { promise: Promise<Response>; resolve: (response: Response) => void }> = {};
+    for (const term of ['Ac', 'Acme']) {
+      let resolve!: (response: Response) => void;
+      const promise = new Promise<Response>((res) => {
+        resolve = res;
+      });
+      deferred[term] = { promise, resolve };
+    }
+
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.startsWith('/clients?q=')) {
+        const term = decodeURIComponent(url.slice('/clients?q='.length));
+        return deferred[term].promise;
+      }
+      throw new Error(`unexpected request: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderPage();
+    const input = screen.getByLabelText('Cliente');
+
+    await userEvent.type(input, 'Ac');
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/clients?q=Ac', expect.anything()));
+
+    await userEvent.type(input, 'me');
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/clients?q=Acme', expect.anything()));
+
+    // The newer request resolves first, as it normally would.
+    deferred.Acme.resolve(jsonResponse(200, [{ id: 1, name: 'Acme Corp' }]));
+    expect(await screen.findByRole('button', { name: 'Acme Corp' })).toBeInTheDocument();
+
+    // The older, now-stale request resolves after - it must not clobber the newer results. There's no
+    // new observable event to await for "this was correctly ignored", so give its promise chain a real
+    // tick to run before asserting nothing changed.
+    deferred.Ac.resolve(jsonResponse(200, [{ id: 2, name: 'Ac Company' }]));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(screen.queryByRole('button', { name: 'Ac Company' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Acme Corp' })).toBeInTheDocument();
+  });
+
   async function selectExistingClientAndLoadAssessment(fetchMock: ReturnType<typeof vi.fn>) {
     renderPage();
     await userEvent.type(screen.getByLabelText('Cliente'), 'Acme');
