@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
-import { api, ApiError } from '../api/client';
+import { api } from '../api/client';
 import { useWorkspace } from '../workspace/WorkspaceContext';
 
 interface ClientOption {
@@ -16,8 +16,6 @@ interface Assessment {
 }
 
 type SelectedClient = { kind: 'existing'; id: number; name: string } | { kind: 'new'; name: string };
-
-type ConcludeResult = { concluido: true } | { concluido: false; pendencias: string[] };
 
 type SearchState = 'idle' | 'loading' | 'success' | 'error';
 
@@ -126,7 +124,7 @@ export function AssessmentPage() {
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [concluding, setConcluding] = useState(false);
-  const [concludeResult, setConcludeResult] = useState<ConcludeResult | null>(null);
+  const [concluded, setConcluded] = useState(false);
   const [concludeError, setConcludeError] = useState<string | null>(null);
 
   function resetAssessmentState() {
@@ -134,7 +132,7 @@ export function AssessmentPage() {
     setAssessment(null);
     setContent('');
     setSaveError(null);
-    setConcludeResult(null);
+    setConcluded(false);
     setConcludeError(null);
   }
 
@@ -151,7 +149,7 @@ export function AssessmentPage() {
     setSelectedClient(client);
     setAssessment(loaded);
     setContent(loaded.content);
-    setConcludeResult(null);
+    setConcluded(false);
     setConcludeError(null);
   }
 
@@ -182,15 +180,12 @@ export function AssessmentPage() {
     if (!workspaceId || !assessment) return;
     setConcluding(true);
     setConcludeError(null);
-    setConcludeResult(null);
+    setConcluded(false);
     try {
-      const result = await api.post<ConcludeResult>(`/workspaces/${workspaceId}/assessments/${assessment.id}/concluir`);
-      setConcludeResult(result);
-    } catch (error) {
-      // seção 6.1, ponto 5: falha na chamada em si (o gate de DoR do Analista fora do ar) é
-      // "tudo-ou-nada" - nada muda de estado, erro reportado para retry manual, não é o mesmo caso
-      // que dor_atendido: false (que vem como 200 com pendências, tratado acima).
-      setConcludeError(error instanceof ApiError && error.status === 502 ? 'O serviço do Analista está indisponível. Tente novamente mais tarde.' : 'Não foi possível concluir o assessment. Tente novamente.');
+      await api.post<{ concluido: true }>(`/workspaces/${workspaceId}/assessments/${assessment.id}/concluir`);
+      setConcluded(true);
+    } catch {
+      setConcludeError('Não foi possível concluir o assessment. Tente novamente.');
     } finally {
       setConcluding(false);
     }
@@ -234,17 +229,7 @@ export function AssessmentPage() {
           </div>
 
           {concludeError && <p role="alert">{concludeError}</p>}
-          {concludeResult?.concluido === true && <p role="status">Assessment concluído.</p>}
-          {concludeResult?.concluido === false && (
-            <div role="alert">
-              <p>O Analista apontou pendências:</p>
-              <ul>
-                {concludeResult.pendencias.map((p) => (
-                  <li key={p}>{p}</li>
-                ))}
-              </ul>
-            </div>
-          )}
+          {concluded && <p role="status">Assessment concluído.</p>}
         </form>
       )}
     </section>
