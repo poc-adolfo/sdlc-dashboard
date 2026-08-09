@@ -1,8 +1,9 @@
 using System.Net;
 using System.Net.Http.Json;
-using System.Text;
 using System.Text.Json;
+using Backend.Api.Services;
 using Backend.Persistence.Data;
+using Backend.Persistence.Domain;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
@@ -46,6 +47,7 @@ public sealed class SpecUsApplicationFactory : WebApplicationFactory<Program>
 {
     private readonly string _databasePath = Path.Combine(Path.GetTempPath(), $"specus-tests-{Guid.NewGuid():N}.db");
     public RoutingFakeHandler Handler { get; } = new();
+    public InMemorySpecStorage Storage { get; } = new();
     public string AnalistaBaseUrl { get; set; } = "https://analista.test";
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
@@ -60,6 +62,8 @@ public sealed class SpecUsApplicationFactory : WebApplicationFactory<Program>
             ["ConnectionStrings:Default"] = $"Data Source={_databasePath}",
             ["Analista:ApiServerBaseUrl"] = AnalistaBaseUrl,
             ["Analista:AllowedHost"] = "analista.test",
+            ["SpecsSkill:ApiServerBaseUrl"] = "https://analista.test",
+            ["SpecsSkill:AllowedHost"] = "analista.test",
             ["GitHub:AppToken"] = "test-token",
             ["AzureDevOps:AppToken"] = "test-token"
         }));
@@ -67,6 +71,8 @@ public sealed class SpecUsApplicationFactory : WebApplicationFactory<Program>
         {
             services.AddHttpClient("Platform").ConfigurePrimaryHttpMessageHandler(() => Handler);
             services.AddHttpClient("Analista").ConfigurePrimaryHttpMessageHandler(() => Handler);
+            services.AddHttpClient("SpecsSkill").ConfigurePrimaryHttpMessageHandler(() => Handler);
+            services.AddSingleton<ISpecStorage>(Storage);
         });
     }
 
@@ -93,11 +99,6 @@ public sealed class SpecUsEndpointsIntegrationTests
         Content = JsonContent.Create(new { choices = new[] { new { message = new { content = dorJson } } } })
     };
 
-    private static HttpResponseMessage GitHubContentResponse(string markdown) => new(HttpStatusCode.OK)
-    {
-        Content = JsonContent.Create(new { content = Convert.ToBase64String(Encoding.UTF8.GetBytes(markdown)) })
-    };
-
     private static async Task<HttpClient> AuthenticatedClient(SpecUsApplicationFactory factory)
     {
         var client = factory.CreateClient(new WebApplicationFactoryClientOptions { HandleCookies = true });
@@ -106,17 +107,30 @@ public sealed class SpecUsEndpointsIntegrationTests
         return client;
     }
 
-    private static async Task<long> CreateGitHubWorkspace(HttpClient client)
+    /// <summary>Seeds a Client row directly (no client-creation endpoint exists on its own - it's normally
+    /// implicit via the assessment combobox, seção 5.1) so workspace creation can set client_id, which
+    /// every spec-projects/spec-storage/subir-us route now requires (the storage path key).</summary>
+    private static async Task<long> SeedClient(SpecUsApplicationFactory factory, string name)
     {
-        var response = await client.PostAsJsonAsync("/workspaces", new { name = $"WS-{Guid.NewGuid():N}", platform = "github", platform_ref = "acme/platform", specs_path = "" });
+        using var scope = factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var client = new Client { Name = name, CreatedAt = DateTime.UtcNow };
+        db.Clients.Add(client);
+        await db.SaveChangesAsync();
+        return client.Id;
+    }
+
+    private static async Task<long> CreateGitHubWorkspace(HttpClient client, long clientId)
+    {
+        var response = await client.PostAsJsonAsync("/workspaces", new { name = $"WS-{Guid.NewGuid():N}", platform = "github", platform_ref = "acme/platform", client_id = clientId });
         response.EnsureSuccessStatusCode();
         var body = await response.Content.ReadFromJsonAsync<JsonElement>();
         return body.GetProperty("id").GetInt64();
     }
 
-    private static async Task<long> CreateAzureDevOpsWorkspace(HttpClient client)
+    private static async Task<long> CreateAzureDevOpsWorkspace(HttpClient client, long clientId)
     {
-        var response = await client.PostAsJsonAsync("/workspaces", new { name = $"WS-{Guid.NewGuid():N}", platform = "azure_devops", platform_ref = "org/project", specs_repo = "org/project/repo", specs_path = "" });
+        var response = await client.PostAsJsonAsync("/workspaces", new { name = $"WS-{Guid.NewGuid():N}", platform = "azure_devops", platform_ref = "org/project", client_id = clientId });
         response.EnsureSuccessStatusCode();
         var body = await response.Content.ReadFromJsonAsync<JsonElement>();
         return body.GetProperty("id").GetInt64();
@@ -133,25 +147,21 @@ public sealed class SpecUsEndpointsIntegrationTests
     public async Task GitHubPublishSucceedsAndPersistsPipelineInstance()
     {
         using var factory = new SpecUsApplicationFactory();
-        factory.Handler.On(r => r.Method == HttpMethod.Get && r.RequestUri!.Host == "api.github.com" && r.RequestUri.AbsolutePath.Contains("/contents/"), _ => GitHubContentResponse(SpecMarkdown));
         factory.Handler.On(r => r.RequestUri!.Host == "analista.test", _ => AnalistaResponse(DorApproved));
         factory.Handler.On(r => r.Method == HttpMethod.Post && r.RequestUri!.AbsolutePath.EndsWith("/issues"), _ => new HttpResponseMessage(HttpStatusCode.Created) { Content = JsonContent.Create(new { number = 42 }) });
 
         using var client = await AuthenticatedClient(factory);
-        var workspaceId = await CreateGitHubWorkspace(client);
+        var clientId = await SeedClient(factory, "Acme");
+        var workspaceId = await CreateGitHubWorkspace(client, clientId);
+        factory.Storage.Seed(clientId.ToString(), "docs", "spec.md", SpecMarkdown);
 
-        var response = await client.PostAsync($"/workspaces/{workspaceId}/specs/docs/spec.md/subir-us", content: null);
+        var response = await client.PostAsync($"/workspaces/{workspaceId}/spec-projects/docs/specs/spec.md/subir-us", content: null);
 
         Assert.Equal(HttpStatusCode.Created, response.StatusCode);
         var body = await response.Content.ReadFromJsonAsync<JsonElement>();
         var instance = body.GetProperty("pipeline_instance");
         Assert.Equal("42", instance.GetProperty("externalRef").GetString());
         Assert.Equal(1, await PipelineInstanceCount(factory, workspaceId));
-
-        var fetchCall = Assert.Single(factory.Handler.Captured, c => c.Uri.Host == "api.github.com" && c.Method == HttpMethod.Get);
-        Assert.Equal("/repos/acme/platform/contents/docs/spec.md", fetchCall.Uri.AbsolutePath);
-        Assert.Equal("Bearer", fetchCall.Headers.Authorization?.Scheme);
-        Assert.Equal("test-token", fetchCall.Headers.Authorization?.Parameter);
 
         var issueCall = Assert.Single(factory.Handler.Captured, c => c.Uri.AbsolutePath.EndsWith("/issues"));
         Assert.Equal("/repos/acme/platform/issues", issueCall.Uri.AbsolutePath);
@@ -166,11 +176,32 @@ public sealed class SpecUsEndpointsIntegrationTests
         Assert.Contains("- [ ] Issue criada", issueBody);
         Assert.Contains("## WBS - Plano de implementacao", issueBody);
         Assert.Contains("1.1 Endpoint", issueBody);
-        Assert.DoesNotContain("<details>", issueBody);
 
         var dorCall = Assert.Single(factory.Handler.Captured, c => c.Uri.Host == "analista.test");
         var dorPayload = JsonDocument.Parse(dorCall.Body!).RootElement;
         Assert.Equal(SpecMarkdown, dorPayload.GetProperty("messages")[0].GetProperty("content").GetString());
+    }
+
+    [Fact]
+    public async Task AlwaysAttachesTheFullSpecToTheIssueSinceItNoLongerLivesInTheCodeRepo()
+    {
+        using var factory = new SpecUsApplicationFactory();
+        factory.Handler.On(r => r.RequestUri!.Host == "analista.test", _ => AnalistaResponse(DorApproved));
+        factory.Handler.On(r => r.Method == HttpMethod.Post && r.RequestUri!.AbsolutePath.EndsWith("/issues"), _ => new HttpResponseMessage(HttpStatusCode.Created) { Content = JsonContent.Create(new { number = 7 }) });
+
+        using var client = await AuthenticatedClient(factory);
+        var clientId = await SeedClient(factory, "Acme");
+        var workspaceId = await CreateGitHubWorkspace(client, clientId);
+        factory.Storage.Seed(clientId.ToString(), "docs", "spec.md", SpecMarkdown);
+
+        var response = await client.PostAsync($"/workspaces/{workspaceId}/spec-projects/docs/specs/spec.md/subir-us", content: null);
+
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        var issueCall = Assert.Single(factory.Handler.Captured, c => c.Uri.AbsolutePath.EndsWith("/issues"));
+        var issueBody = JsonDocument.Parse(issueCall.Body!).RootElement.GetProperty("body").GetString()!;
+        Assert.Contains("<details>", issueBody);
+        Assert.Contains("Spec completa: docs/spec.md", issueBody);
+        Assert.Contains("```markdown\n" + SpecMarkdown, issueBody);
     }
 
     [Fact]
@@ -182,14 +213,15 @@ public sealed class SpecUsEndpointsIntegrationTests
         // (ReconciliationPollerServiceTests). This is the other half of that contract: "Subir US" must
         // actually write that row when it publishes.
         using var factory = new SpecUsApplicationFactory();
-        factory.Handler.On(r => r.Method == HttpMethod.Get && r.RequestUri!.Host == "api.github.com" && r.RequestUri.AbsolutePath.Contains("/contents/"), _ => GitHubContentResponse(SpecMarkdown));
         factory.Handler.On(r => r.RequestUri!.Host == "analista.test", _ => AnalistaResponse(DorApproved));
         factory.Handler.On(r => r.Method == HttpMethod.Post && r.RequestUri!.AbsolutePath.EndsWith("/issues"), _ => new HttpResponseMessage(HttpStatusCode.Created) { Content = JsonContent.Create(new { number = 42 }) });
 
         using var client = await AuthenticatedClient(factory);
-        var workspaceId = await CreateGitHubWorkspace(client);
+        var clientId = await SeedClient(factory, "Acme");
+        var workspaceId = await CreateGitHubWorkspace(client, clientId);
+        factory.Storage.Seed(clientId.ToString(), "docs", "spec.md", SpecMarkdown);
 
-        var response = await client.PostAsync($"/workspaces/{workspaceId}/specs/docs/spec.md/subir-us", content: null);
+        var response = await client.PostAsync($"/workspaces/{workspaceId}/spec-projects/docs/specs/spec.md/subir-us", content: null);
 
         Assert.Equal(HttpStatusCode.Created, response.StatusCode);
         var issueCall = Assert.Single(factory.Handler.Captured, c => c.Uri.AbsolutePath.EndsWith("/issues"));
@@ -207,25 +239,20 @@ public sealed class SpecUsEndpointsIntegrationTests
     public async Task AzureDevOpsPublishSucceedsAndPersistsWorkItemIdAsExternalRef()
     {
         using var factory = new SpecUsApplicationFactory();
-        factory.Handler.On(r => r.Method == HttpMethod.Get && r.RequestUri!.Host == "dev.azure.com" && r.RequestUri.AbsolutePath.Contains("/items"), _ => new HttpResponseMessage(HttpStatusCode.OK) { Content = JsonContent.Create(new { content = SpecMarkdown }) });
         factory.Handler.On(r => r.RequestUri!.Host == "analista.test", _ => AnalistaResponse(DorApproved));
         factory.Handler.On(r => r.Method == HttpMethod.Post && r.RequestUri!.AbsolutePath.Contains("/_apis/wit/workitems/"), _ => new HttpResponseMessage(HttpStatusCode.OK) { Content = JsonContent.Create(new { id = 123 }) });
 
         using var client = await AuthenticatedClient(factory);
-        var workspaceId = await CreateAzureDevOpsWorkspace(client);
+        var clientId = await SeedClient(factory, "Acme");
+        var workspaceId = await CreateAzureDevOpsWorkspace(client, clientId);
+        factory.Storage.Seed(clientId.ToString(), "docs", "spec.md", SpecMarkdown);
 
-        var response = await client.PostAsync($"/workspaces/{workspaceId}/specs/docs/spec.md/subir-us", content: null);
+        var response = await client.PostAsync($"/workspaces/{workspaceId}/spec-projects/docs/specs/spec.md/subir-us", content: null);
 
         Assert.Equal(HttpStatusCode.Created, response.StatusCode);
         var body = await response.Content.ReadFromJsonAsync<JsonElement>();
         Assert.Equal("123", body.GetProperty("pipeline_instance").GetProperty("externalRef").GetString());
         Assert.Equal(1, await PipelineInstanceCount(factory, workspaceId));
-
-        var fetchCall = Assert.Single(factory.Handler.Captured, c => c.Uri.Host == "dev.azure.com" && c.Method == HttpMethod.Get);
-        Assert.Equal("/org/project/_apis/git/repositories/repo/items", fetchCall.Uri.AbsolutePath);
-        Assert.Contains("path=/docs/spec.md", fetchCall.Uri.Query);
-        Assert.Equal("Basic", fetchCall.Headers.Authorization?.Scheme);
-        Assert.Equal(Convert.ToBase64String(Encoding.ASCII.GetBytes(":test-token")), fetchCall.Headers.Authorization?.Parameter);
 
         var workItemCall = Assert.Single(factory.Handler.Captured, c => c.Uri.AbsolutePath.Contains("/_apis/wit/workitems/"));
         Assert.Equal("/org/project/_apis/wit/workitems/$User Story", Uri.UnescapeDataString(workItemCall.Uri.AbsolutePath));
@@ -244,14 +271,15 @@ public sealed class SpecUsEndpointsIntegrationTests
     public async Task DorBlockedReturnsPendenciasAndDoesNotPublishOrPersist()
     {
         using var factory = new SpecUsApplicationFactory();
-        factory.Handler.On(r => r.Method == HttpMethod.Get && r.RequestUri!.Host == "api.github.com" && r.RequestUri.AbsolutePath.Contains("/contents/"), _ => GitHubContentResponse(SpecMarkdown));
         factory.Handler.On(r => r.RequestUri!.Host == "analista.test", _ => AnalistaResponse(DorBlocked));
         factory.Handler.On(r => r.Method == HttpMethod.Post && r.RequestUri!.AbsolutePath.EndsWith("/issues"), _ => throw new InvalidOperationException("must not publish when DoR blocks"));
 
         using var client = await AuthenticatedClient(factory);
-        var workspaceId = await CreateGitHubWorkspace(client);
+        var clientId = await SeedClient(factory, "Acme");
+        var workspaceId = await CreateGitHubWorkspace(client, clientId);
+        factory.Storage.Seed(clientId.ToString(), "docs", "spec.md", SpecMarkdown);
 
-        var response = await client.PostAsync($"/workspaces/{workspaceId}/specs/docs/spec.md/subir-us", content: null);
+        var response = await client.PostAsync($"/workspaces/{workspaceId}/spec-projects/docs/specs/spec.md/subir-us", content: null);
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         var body = await response.Content.ReadFromJsonAsync<JsonElement>();
@@ -264,95 +292,87 @@ public sealed class SpecUsEndpointsIntegrationTests
     public async Task MalformedAnalistaBaseUrlReturnsBadGatewayNotServerError()
     {
         using var factory = new SpecUsApplicationFactory { AnalistaBaseUrl = "not a valid url" };
-        factory.Handler.On(r => r.Method == HttpMethod.Get && r.RequestUri!.Host == "api.github.com" && r.RequestUri.AbsolutePath.Contains("/contents/"), _ => GitHubContentResponse(SpecMarkdown));
 
         using var client = await AuthenticatedClient(factory);
-        var workspaceId = await CreateGitHubWorkspace(client);
+        var clientId = await SeedClient(factory, "Acme");
+        var workspaceId = await CreateGitHubWorkspace(client, clientId);
+        factory.Storage.Seed(clientId.ToString(), "docs", "spec.md", SpecMarkdown);
 
-        var response = await client.PostAsync($"/workspaces/{workspaceId}/specs/docs/spec.md/subir-us", content: null);
+        var response = await client.PostAsync($"/workspaces/{workspaceId}/spec-projects/docs/specs/spec.md/subir-us", content: null);
 
         Assert.Equal(HttpStatusCode.BadGateway, response.StatusCode);
         Assert.Equal(0, await PipelineInstanceCount(factory, workspaceId));
     }
 
     [Fact]
-    public async Task SpecFetchFailureReturnsBadGatewayAndDoesNotPersist()
+    public async Task SpecNotFoundInStorageReturnsNotFoundAndDoesNotPersist()
     {
         using var factory = new SpecUsApplicationFactory();
-        factory.Handler.On(r => r.Method == HttpMethod.Get && r.RequestUri!.Host == "api.github.com" && r.RequestUri.AbsolutePath.Contains("/contents/"), _ => new HttpResponseMessage(HttpStatusCode.NotFound));
 
         using var client = await AuthenticatedClient(factory);
-        var workspaceId = await CreateGitHubWorkspace(client);
+        var clientId = await SeedClient(factory, "Acme");
+        var workspaceId = await CreateGitHubWorkspace(client, clientId);
+        // Deliberately not seeded into factory.Storage.
 
-        var response = await client.PostAsync($"/workspaces/{workspaceId}/specs/docs/spec.md/subir-us", content: null);
+        var response = await client.PostAsync($"/workspaces/{workspaceId}/spec-projects/docs/specs/spec.md/subir-us", content: null);
 
-        Assert.Equal(HttpStatusCode.BadGateway, response.StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
         Assert.Equal(0, await PipelineInstanceCount(factory, workspaceId));
+    }
+
+    [Fact]
+    public async Task WorkspaceWithoutClientIdReturns422()
+    {
+        // client_id is set once the assessment concludes (AssessmentEndpoints.Conclude) - a workspace
+        // that never got there has nothing to scope the storage path with.
+        using var factory = new SpecUsApplicationFactory();
+        using var client = await AuthenticatedClient(factory);
+        var create = await client.PostAsJsonAsync("/workspaces", new { name = $"WS-{Guid.NewGuid():N}", platform = "github", platform_ref = "acme/platform" });
+        create.EnsureSuccessStatusCode();
+        var workspaceId = (await create.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetInt64();
+
+        var response = await client.PostAsync($"/workspaces/{workspaceId}/spec-projects/docs/specs/spec.md/subir-us", content: null);
+
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, response.StatusCode);
     }
 
     [Fact]
     public async Task GitHubIssueCreationFailureReturnsBadGatewayAndDoesNotPersist()
     {
         using var factory = new SpecUsApplicationFactory();
-        factory.Handler.On(r => r.Method == HttpMethod.Get && r.RequestUri!.Host == "api.github.com" && r.RequestUri.AbsolutePath.Contains("/contents/"), _ => GitHubContentResponse(SpecMarkdown));
         factory.Handler.On(r => r.RequestUri!.Host == "analista.test", _ => AnalistaResponse(DorApproved));
         factory.Handler.On(r => r.Method == HttpMethod.Post && r.RequestUri!.AbsolutePath.EndsWith("/issues"), _ => new HttpResponseMessage(HttpStatusCode.InternalServerError));
 
         using var client = await AuthenticatedClient(factory);
-        var workspaceId = await CreateGitHubWorkspace(client);
+        var clientId = await SeedClient(factory, "Acme");
+        var workspaceId = await CreateGitHubWorkspace(client, clientId);
+        factory.Storage.Seed(clientId.ToString(), "docs", "spec.md", SpecMarkdown);
 
-        var response = await client.PostAsync($"/workspaces/{workspaceId}/specs/docs/spec.md/subir-us", content: null);
+        var response = await client.PostAsync($"/workspaces/{workspaceId}/spec-projects/docs/specs/spec.md/subir-us", content: null);
 
         Assert.Equal(HttpStatusCode.BadGateway, response.StatusCode);
         Assert.Equal(0, await PipelineInstanceCount(factory, workspaceId));
     }
 
     [Fact]
-    public async Task ConfiguredSpecsPathIsPrependedToTheRequestedPath()
+    public async Task PublishLinksSpecIdWhenTheSpecWasPreviouslyListed()
     {
-        using var factory = new SpecUsApplicationFactory();
-        factory.Handler.On(r => r.Method == HttpMethod.Get && r.RequestUri!.Host == "api.github.com" && r.RequestUri.AbsolutePath.Contains("/contents/"), _ => GitHubContentResponse(SpecMarkdown));
-        factory.Handler.On(r => r.RequestUri!.Host == "analista.test", _ => AnalistaResponse(DorApproved));
-        factory.Handler.On(r => r.Method == HttpMethod.Post && r.RequestUri!.AbsolutePath.EndsWith("/issues"), _ => new HttpResponseMessage(HttpStatusCode.Created) { Content = JsonContent.Create(new { number = 1 }) });
-
-        using var client = await AuthenticatedClient(factory);
-        var create = await client.PostAsJsonAsync("/workspaces", new { name = $"WS-{Guid.NewGuid():N}", platform = "github", platform_ref = "acme/platform", specs_path = "specs/" });
-        create.EnsureSuccessStatusCode();
-        var workspaceId = (await create.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetInt64();
-
-        var response = await client.PostAsync($"/workspaces/{workspaceId}/specs/foo.md/subir-us", content: null);
-
-        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
-        var fetchCall = Assert.Single(factory.Handler.Captured, c => c.Uri.Host == "api.github.com" && c.Method == HttpMethod.Get);
-        Assert.Equal("/repos/acme/platform/contents/specs/foo.md", fetchCall.Uri.AbsolutePath);
-    }
-
-    [Fact]
-    public async Task PublishLinksSpecIdWhenTheSpecWasPreviouslyListedWithAConfiguredSpecsPath()
-    {
-        // Regression test: the spec index (SpecListingEndpoints) always stores the full repo-relative
-        // path ("specs/foo.md"), while /subir-us's route only carries the part after specs_path
-        // ("foo.md") - the lookup used to compare against the route segment instead of the same full
-        // path used by the index, so SpecId never linked whenever specs_path was configured.
         using var factory = new SpecUsApplicationFactory();
         const string specWithStatus = "# Checkout\n\n> Status: rascunho (2026-08-05).\n\n## User Story\n**Como** operador, **quero** publicar.\n\n## Criterios de aceite\n- [ ] Issue criada\n\n## WBS - Plano de implementacao\n1.1 Endpoint\n";
-        factory.Handler.On(r => r.Method == HttpMethod.Get && r.RequestUri!.Host == "api.github.com" && r.RequestUri.AbsolutePath == "/repos/acme/platform/contents/specs", _ =>
-            new HttpResponseMessage(HttpStatusCode.OK) { Content = JsonContent.Create(new[] { new { name = "foo.md", path = "specs/foo.md", type = "file" } }) });
-        factory.Handler.On(r => r.Method == HttpMethod.Get && r.RequestUri!.Host == "api.github.com" && r.RequestUri.AbsolutePath.Contains("/contents/"), _ => GitHubContentResponse(specWithStatus));
         factory.Handler.On(r => r.RequestUri!.Host == "analista.test", _ => AnalistaResponse(DorApproved));
         factory.Handler.On(r => r.Method == HttpMethod.Post && r.RequestUri!.AbsolutePath.EndsWith("/issues"), _ => new HttpResponseMessage(HttpStatusCode.Created) { Content = JsonContent.Create(new { number = 1 }) });
 
         using var client = await AuthenticatedClient(factory);
-        var create = await client.PostAsJsonAsync("/workspaces", new { name = $"WS-{Guid.NewGuid():N}", platform = "github", platform_ref = "acme/platform", specs_path = "specs/" });
-        create.EnsureSuccessStatusCode();
-        var workspaceId = (await create.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetInt64();
+        var clientId = await SeedClient(factory, "Acme");
+        var workspaceId = await CreateGitHubWorkspace(client, clientId);
+        factory.Storage.Seed(clientId.ToString(), "docs", "foo.md", specWithStatus);
 
-        var listing = await client.GetAsync($"/workspaces/{workspaceId}/specs");
+        var listing = await client.GetAsync($"/workspaces/{workspaceId}/spec-projects/docs/specs");
         Assert.Equal(HttpStatusCode.OK, listing.StatusCode);
-        var listedSpecId = (await listing.Content.ReadFromJsonAsync<JsonElement>())[0].GetProperty("path").GetString();
-        Assert.Equal("specs/foo.md", listedSpecId);
+        var listedFileName = (await listing.Content.ReadFromJsonAsync<JsonElement>())[0].GetProperty("fileName").GetString();
+        Assert.Equal("foo.md", listedFileName);
 
-        var response = await client.PostAsync($"/workspaces/{workspaceId}/specs/foo.md/subir-us", content: null);
+        var response = await client.PostAsync($"/workspaces/{workspaceId}/spec-projects/docs/specs/foo.md/subir-us", content: null);
 
         Assert.Equal(HttpStatusCode.Created, response.StatusCode);
         var body = await response.Content.ReadFromJsonAsync<JsonElement>();
@@ -361,53 +381,8 @@ public sealed class SpecUsEndpointsIntegrationTests
 
         using var scope = factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-        var spec = await db.Specs.SingleAsync(s => s.WorkspaceId == workspaceId && s.Path == "specs/foo.md");
+        var spec = await db.Specs.SingleAsync(s => s.WorkspaceId == workspaceId && s.Path == "docs/foo.md");
         Assert.Equal(spec.Id, specIdElement.GetInt64());
-    }
-
-    [Fact]
-    public async Task SpecsRepoDifferentFromPlatformRefFetchesFromSpecsRepoAndAttachesFullSpecToIssue()
-    {
-        using var factory = new SpecUsApplicationFactory();
-        factory.Handler.On(r => r.Method == HttpMethod.Get && r.RequestUri!.Host == "api.github.com" && r.RequestUri.AbsolutePath.Contains("/contents/"), _ => GitHubContentResponse(SpecMarkdown));
-        factory.Handler.On(r => r.RequestUri!.Host == "analista.test", _ => AnalistaResponse(DorApproved));
-        factory.Handler.On(r => r.Method == HttpMethod.Post && r.RequestUri!.AbsolutePath.EndsWith("/issues"), _ => new HttpResponseMessage(HttpStatusCode.Created) { Content = JsonContent.Create(new { number = 7 }) });
-
-        using var client = await AuthenticatedClient(factory);
-        var create = await client.PostAsJsonAsync("/workspaces", new { name = $"WS-{Guid.NewGuid():N}", platform = "github", platform_ref = "acme/platform", specs_repo = "acme/specs-repo", specs_path = "" });
-        create.EnsureSuccessStatusCode();
-        var workspaceId = (await create.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetInt64();
-
-        var response = await client.PostAsync($"/workspaces/{workspaceId}/specs/docs/spec.md/subir-us", content: null);
-
-        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
-        var fetchCall = Assert.Single(factory.Handler.Captured, c => c.Uri.Host == "api.github.com" && c.Method == HttpMethod.Get);
-        Assert.Equal("/repos/acme/specs-repo/contents/docs/spec.md", fetchCall.Uri.AbsolutePath);
-
-        var issueCall = Assert.Single(factory.Handler.Captured, c => c.Uri.AbsolutePath.EndsWith("/issues"));
-        Assert.Equal("/repos/acme/platform/issues", issueCall.Uri.AbsolutePath);
-        var issueBody = JsonDocument.Parse(issueCall.Body!).RootElement.GetProperty("body").GetString()!;
-        Assert.Contains("<details>", issueBody);
-        Assert.Contains("Spec completa: docs/spec.md", issueBody);
-        Assert.Contains("```markdown\n" + SpecMarkdown, issueBody);
-    }
-
-    [Fact]
-    public async Task AzureDevOpsRepoWithoutThreeSegmentsReturnsBadGateway()
-    {
-        using var factory = new SpecUsApplicationFactory();
-        factory.Handler.On(r => r.RequestUri!.Host == "analista.test", _ => AnalistaResponse(DorApproved));
-
-        using var client = await AuthenticatedClient(factory);
-        var create = await client.PostAsJsonAsync("/workspaces", new { name = $"WS-{Guid.NewGuid():N}", platform = "azure_devops", platform_ref = "org/project", specs_path = "" });
-        create.EnsureSuccessStatusCode();
-        var workspaceId = (await create.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetInt64();
-
-        var response = await client.PostAsync($"/workspaces/{workspaceId}/specs/docs/spec.md/subir-us", content: null);
-
-        Assert.Equal(HttpStatusCode.BadGateway, response.StatusCode);
-        Assert.Equal(0, await PipelineInstanceCount(factory, workspaceId));
-        Assert.DoesNotContain(factory.Handler.Captured, c => c.Uri.Host == "analista.test");
     }
 
     [Fact]
@@ -415,14 +390,15 @@ public sealed class SpecUsEndpointsIntegrationTests
     {
         const string specWithoutHeading = "## User Story\n**Como** operador, **quero** publicar.\n\n## Criterios de aceite\n- [ ] ok\n\n## WBS - Plano de implementacao\n1.1 Endpoint\n";
         using var factory = new SpecUsApplicationFactory();
-        factory.Handler.On(r => r.Method == HttpMethod.Get && r.RequestUri!.Host == "api.github.com" && r.RequestUri.AbsolutePath.Contains("/contents/"), _ => GitHubContentResponse(specWithoutHeading));
         factory.Handler.On(r => r.RequestUri!.Host == "analista.test", _ => AnalistaResponse(DorApproved));
         factory.Handler.On(r => r.Method == HttpMethod.Post && r.RequestUri!.AbsolutePath.EndsWith("/issues"), _ => new HttpResponseMessage(HttpStatusCode.Created) { Content = JsonContent.Create(new { number = 9 }) });
 
         using var client = await AuthenticatedClient(factory);
-        var workspaceId = await CreateGitHubWorkspace(client);
+        var clientId = await SeedClient(factory, "Acme");
+        var workspaceId = await CreateGitHubWorkspace(client, clientId);
+        factory.Storage.Seed(clientId.ToString(), "docs", "spec.md", specWithoutHeading);
 
-        var response = await client.PostAsync($"/workspaces/{workspaceId}/specs/docs/spec.md/subir-us", content: null);
+        var response = await client.PostAsync($"/workspaces/{workspaceId}/spec-projects/docs/specs/spec.md/subir-us", content: null);
 
         Assert.Equal(HttpStatusCode.Created, response.StatusCode);
         var issueCall = Assert.Single(factory.Handler.Captured, c => c.Uri.AbsolutePath.EndsWith("/issues"));
@@ -431,21 +407,21 @@ public sealed class SpecUsEndpointsIntegrationTests
     }
 
     [Fact]
-    public async Task AzureDevOpsFetchResponseWithoutContentPropertyFallsBackToRawBody()
+    public async Task AzureDevOpsRepoWithoutTwoSegmentsReturnsBadGateway()
     {
-        const string rawBody = "{\"unexpected\":\"shape\"}";
         using var factory = new SpecUsApplicationFactory();
-        factory.Handler.On(r => r.Method == HttpMethod.Get && r.RequestUri!.Host == "dev.azure.com" && r.RequestUri.AbsolutePath.Contains("/items"), _ => new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(rawBody, Encoding.UTF8, "application/json") });
         factory.Handler.On(r => r.RequestUri!.Host == "analista.test", _ => AnalistaResponse(DorApproved));
-        factory.Handler.On(r => r.Method == HttpMethod.Post && r.RequestUri!.AbsolutePath.Contains("/_apis/wit/workitems/"), _ => new HttpResponseMessage(HttpStatusCode.OK) { Content = JsonContent.Create(new { id = 55 }) });
 
         using var client = await AuthenticatedClient(factory);
-        var workspaceId = await CreateAzureDevOpsWorkspace(client);
+        var clientId = await SeedClient(factory, "Acme");
+        var create = await client.PostAsJsonAsync("/workspaces", new { name = $"WS-{Guid.NewGuid():N}", platform = "azure_devops", platform_ref = "org-project-no-slash", client_id = clientId });
+        create.EnsureSuccessStatusCode();
+        var workspaceId = (await create.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetInt64();
+        factory.Storage.Seed(clientId.ToString(), "docs", "spec.md", SpecMarkdown);
 
-        var response = await client.PostAsync($"/workspaces/{workspaceId}/specs/docs/spec.md/subir-us", content: null);
+        var response = await client.PostAsync($"/workspaces/{workspaceId}/spec-projects/docs/specs/spec.md/subir-us", content: null);
 
-        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
-        var dorCall = Assert.Single(factory.Handler.Captured, c => c.Uri.Host == "analista.test");
-        Assert.Equal(rawBody, JsonDocument.Parse(dorCall.Body!).RootElement.GetProperty("messages")[0].GetProperty("content").GetString());
+        Assert.Equal(HttpStatusCode.BadGateway, response.StatusCode);
+        Assert.Equal(0, await PipelineInstanceCount(factory, workspaceId));
     }
 }
