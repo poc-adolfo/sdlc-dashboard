@@ -95,24 +95,35 @@ function WorkspaceDetailsSection({
 
   return (
     <form onSubmit={handleSubmit} className="workspace-details-form">
-      <label htmlFor="workspace-name">Nome</label>
-      <input id="workspace-name" value={name} onChange={(e) => setName(e.target.value)} disabled={submitting} required />
+      <div className="field-group">
+        <span className="field-group-label">Identificação</span>
+        <label htmlFor="workspace-name">Nome</label>
+        <input id="workspace-name" value={name} onChange={(e) => setName(e.target.value)} disabled={submitting} required />
+      </div>
 
-      <label htmlFor="workspace-platform">Plataforma</label>
-      <select id="workspace-platform" value={platform} onChange={(e) => setPlatform(e.target.value as 'github' | 'azure_devops')} disabled={submitting}>
-        <option value="github">GitHub</option>
-        <option value="azure_devops">Azure DevOps</option>
-      </select>
-
-      <label htmlFor="workspace-platform-ref">Repositório/Projeto</label>
-      <input
-        id="workspace-platform-ref"
-        value={platformRef}
-        onChange={(e) => setPlatformRef(e.target.value)}
-        placeholder="org/repo"
-        disabled={submitting}
-        required
-      />
+      <div className="field-group">
+        <span className="field-group-label">Publicação</span>
+        <div className="field-group-row">
+          <div>
+            <label htmlFor="workspace-platform">Plataforma</label>
+            <select id="workspace-platform" value={platform} onChange={(e) => setPlatform(e.target.value as 'github' | 'azure_devops')} disabled={submitting}>
+              <option value="github">GitHub</option>
+              <option value="azure_devops">Azure DevOps</option>
+            </select>
+          </div>
+          <div>
+            <label htmlFor="workspace-platform-ref">Repositório/Projeto</label>
+            <input
+              id="workspace-platform-ref"
+              value={platformRef}
+              onChange={(e) => setPlatformRef(e.target.value)}
+              placeholder="org/repo"
+              disabled={submitting}
+              required
+            />
+          </div>
+        </div>
+      </div>
 
       {error && <p role="alert">{error}</p>}
       {saved && <p role="status">Workspace atualizado.</p>}
