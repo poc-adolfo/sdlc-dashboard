@@ -40,8 +40,12 @@ public sealed class FakeAnalistaHandler : HttpMessageHandler
     public bool Delay { get; set; }
     public HttpStatusCode StatusCode { get; set; } = HttpStatusCode.OK;
     public string? Authorization { get; private set; }
+    // QA finding on PR #32: Authorization alone stays null for a call made without an auth header too,
+    // so it can't prove the handler was never invoked - an explicit counter can.
+    public int RequestCount { get; private set; }
     protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
     {
+        RequestCount++;
         Authorization = request.Headers.Authorization?.ToString();
         if (Delay) await Task.Delay(TimeSpan.FromSeconds(5), ct);
         if (Fail) throw new HttpRequestException("offline");
@@ -56,8 +60,8 @@ public sealed class AssessmentTests
     { var c=f.CreateClient(); var w=await (await c.PostAsJsonAsync("/workspaces",new{name,platform="github",platform_ref=Guid.NewGuid().ToString()})).Content.ReadFromJsonAsync<Workspace>(); var a=await (await c.PostAsJsonAsync($"/workspaces/{w!.Id}/assessments",new{client_name=name,content="x"})).Content.ReadFromJsonAsync<Assessment>(); return (c,w.Id,a!.Id); }
 
     [Fact] public async Task EachFactoryHasIsolatedDatabaseAndHandler() { using var f=New(); var (c,_,_)=await Seed(f); Assert.Single(await c.GetFromJsonAsync<ClientResponse[]>("/clients")); }
-    [Fact] public async Task ConcludeUpdatesAssessmentAndWorkspaceWithoutCallingAnalista() { using var f=New(); var (c,w,a)=await Seed(f,"True"); var r=await c.PostAsync($"/workspaces/{w}/assessments/{a}/concluir",null); Assert.Equal(HttpStatusCode.OK,r.StatusCode); Assert.Contains("\"concluido\":true",await r.Content.ReadAsStringAsync()); var ar=await c.GetFromJsonAsync<AssessmentResponse>($"/workspaces/{w}/assessments/{a}"); var wr=await c.GetFromJsonAsync<WorkspaceResponse>($"/workspaces/{w}"); Assert.Equal("concluido",ar!.Status); Assert.Equal(ar.ClientId,wr!.ClientId); Assert.Null(f.Handler.Authorization); }
-    [Fact] public async Task ConcludeSucceedsEvenWhenAnalistaIsUnreachable() { using var f=New(); f.Handler.Fail=true; var (c,w,a)=await Seed(f,"Unreachable"); var r=await c.PostAsync($"/workspaces/{w}/assessments/{a}/concluir",null); Assert.Equal(HttpStatusCode.OK,r.StatusCode); var ar=await c.GetFromJsonAsync<AssessmentResponse>($"/workspaces/{w}/assessments/{a}"); Assert.Equal("concluido",ar!.Status); }
+    [Fact] public async Task ConcludeUpdatesAssessmentAndWorkspaceWithoutCallingAnalista() { using var f=New(); var (c,w,a)=await Seed(f,"True"); var r=await c.PostAsync($"/workspaces/{w}/assessments/{a}/concluir",null); Assert.Equal(HttpStatusCode.OK,r.StatusCode); Assert.Contains("\"concluido\":true",await r.Content.ReadAsStringAsync()); var ar=await c.GetFromJsonAsync<AssessmentResponse>($"/workspaces/{w}/assessments/{a}"); var wr=await c.GetFromJsonAsync<WorkspaceResponse>($"/workspaces/{w}"); Assert.Equal("concluido",ar!.Status); Assert.Equal(ar.ClientId,wr!.ClientId); Assert.Equal(0,f.Handler.RequestCount); }
+    [Fact] public async Task ConcludeSucceedsEvenWhenAnalistaIsUnreachable() { using var f=New(); f.Handler.Fail=true; var (c,w,a)=await Seed(f,"Unreachable"); var r=await c.PostAsync($"/workspaces/{w}/assessments/{a}/concluir",null); Assert.Equal(HttpStatusCode.OK,r.StatusCode); var ar=await c.GetFromJsonAsync<AssessmentResponse>($"/workspaces/{w}/assessments/{a}"); Assert.Equal("concluido",ar!.Status); Assert.Equal(0,f.Handler.RequestCount); }
     [Fact]
     public async Task UpsertRejectsOversizedContentWithoutPersisting()
     {
