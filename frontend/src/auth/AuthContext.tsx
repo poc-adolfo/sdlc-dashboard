@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { api, UnauthorizedError } from '../api/client';
+import { api, setUnauthorizedHandler, UnauthorizedError } from '../api/client';
 
 type AuthStatus = 'checking' | 'authenticated' | 'anonymous' | 'error';
 
@@ -50,6 +50,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     checkSession();
   }, [checkSession]);
+
+  // Any 401 from anywhere in the app - not just this probe - means the session is gone. Without this,
+  // a page that's been open past ExpirationMinutes only finds out when some unrelated request happens
+  // to fail, and shows that request's own generic error instead of sending the operator back to login.
+  useEffect(() => {
+    setUnauthorizedHandler(() => {
+      if (mountedRef.current) setStatus('anonymous');
+    });
+    return () => setUnauthorizedHandler(null);
+  }, []);
 
   const login = useCallback(async (username: string, password: string) => {
     await api.post('/auth/login', { username, password });
