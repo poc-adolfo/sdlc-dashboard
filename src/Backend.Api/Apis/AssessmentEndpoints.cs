@@ -1,5 +1,4 @@
 using System.Text.Json.Serialization;
-using Backend.Api.Services;
 using Backend.Persistence.Data;
 using Backend.Persistence.Domain;
 using Microsoft.EntityFrameworkCore;
@@ -75,20 +74,15 @@ public static class AssessmentEndpoints
         return Results.Ok(AssessmentResponse.From(assessment));
     }
 
-    private static async Task<IResult> Conclude(long id, long aid, AppDbContext db, AnalystDorGate gate, IConfiguration configuration, CancellationToken ct)
+    private static async Task<IResult> Conclude(long id, long aid, AppDbContext db, CancellationToken ct)
     {
         // Keep the ownership check explicit: a mismatched workspace must look identical to a missing assessment.
         var assessment = await db.Assessments.SingleOrDefaultAsync(a => a.Id == aid, ct);
         if (assessment is null || assessment.WorkspaceId != id) return Results.NotFound();
-        var maxContentLength = configuration.GetValue("Analista:MaxContentLength", 10000);
-        if (maxContentLength <= 0) maxContentLength = 10000;
-        if (assessment.Content.Length > maxContentLength)
-            return Results.UnprocessableEntity(new { errors = new[] { $"content: maximum length is {maxContentLength} characters" } });
 
-        var dor = await gate.CheckAsync(assessment.Content, ct);
-        if (dor is null) return Results.StatusCode(StatusCodes.Status502BadGateway);
-        if (!dor.Attended) return Results.Ok(new { concluido = false, pendencias = dor.Pending });
-
+        // Correção 2026-08-09 (spec seção 5.1/6.1): "Concluir" só persiste - não chama nenhum perfil
+        // Hermes. O gate de DoR do Analista roda exclusivamente em "Subir US" (SpecUsEndpoints), sobre a
+        // spec, não sobre o assessment.
         assessment.Status = AssessmentStatus.Concluido;
         var workspace = await db.Workspaces.SingleAsync(w => w.Id == id, ct);
         workspace.ClientId = assessment.ClientId;

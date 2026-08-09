@@ -40,8 +40,12 @@ public sealed class FakeAnalistaHandler : HttpMessageHandler
     public bool Delay { get; set; }
     public HttpStatusCode StatusCode { get; set; } = HttpStatusCode.OK;
     public string? Authorization { get; private set; }
+    // QA finding on PR #32: Authorization alone stays null for a call made without an auth header too,
+    // so it can't prove the handler was never invoked - an explicit counter can.
+    public int RequestCount { get; private set; }
     protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
     {
+        RequestCount++;
         Authorization = request.Headers.Authorization?.ToString();
         if (Delay) await Task.Delay(TimeSpan.FromSeconds(5), ct);
         if (Fail) throw new HttpRequestException("offline");
@@ -56,9 +60,8 @@ public sealed class AssessmentTests
     { var c=f.CreateClient(); var w=await (await c.PostAsJsonAsync("/workspaces",new{name,platform="github",platform_ref=Guid.NewGuid().ToString()})).Content.ReadFromJsonAsync<Workspace>(); var a=await (await c.PostAsJsonAsync($"/workspaces/{w!.Id}/assessments",new{client_name=name,content="x"})).Content.ReadFromJsonAsync<Assessment>(); return (c,w.Id,a!.Id); }
 
     [Fact] public async Task EachFactoryHasIsolatedDatabaseAndHandler() { using var f=New(); var (c,_,_)=await Seed(f); Assert.Single(await c.GetFromJsonAsync<ClientResponse[]>("/clients")); }
-    [Fact] public async Task ConcludeTrueUpdatesAssessmentAndWorkspace() { using var f=New(); var (c,w,a)=await Seed(f,"True"); var r=await c.PostAsync($"/workspaces/{w}/assessments/{a}/concluir",null); Assert.Equal(HttpStatusCode.OK,r.StatusCode); Assert.Contains("\"concluido\":true",await r.Content.ReadAsStringAsync()); var ar=await c.GetFromJsonAsync<AssessmentResponse>($"/workspaces/{w}/assessments/{a}"); var wr=await c.GetFromJsonAsync<WorkspaceResponse>($"/workspaces/{w}"); Assert.Equal("concluido",ar!.Status); Assert.Equal(ar.ClientId,wr!.ClientId); }
-    [Fact] public async Task ConcludeFalseReturnsPendingAndPreservesState() { using var f=New(); f.Handler.Body="{\"dor_atendido\":false,\"pendencias\":[\"docs\"]}"; var (c,w,a)=await Seed(f,"False"); var r=await c.PostAsync($"/workspaces/{w}/assessments/{a}/concluir",null); Assert.Equal(HttpStatusCode.OK,r.StatusCode); Assert.Contains("docs",await r.Content.ReadAsStringAsync()); var ar=await c.GetFromJsonAsync<AssessmentResponse>($"/workspaces/{w}/assessments/{a}"); var wr=await c.GetFromJsonAsync<WorkspaceResponse>($"/workspaces/{w}"); Assert.Equal("em_andamento",ar!.Status); Assert.Null(wr!.ClientId); }
-    [Fact] public async Task ConcludeFailurePreservesState() { using var f=New(); f.Handler.Fail=true; var (c,w,a)=await Seed(f,"Fail"); var r=await c.PostAsync($"/workspaces/{w}/assessments/{a}/concluir",null); Assert.Equal(HttpStatusCode.BadGateway,r.StatusCode); var ar=await c.GetFromJsonAsync<AssessmentResponse>($"/workspaces/{w}/assessments/{a}"); Assert.Equal("em_andamento",ar!.Status); Assert.Null((await c.GetFromJsonAsync<WorkspaceResponse>($"/workspaces/{w}"))!.ClientId); }
+    [Fact] public async Task ConcludeUpdatesAssessmentAndWorkspaceWithoutCallingAnalista() { using var f=New(); var (c,w,a)=await Seed(f,"True"); var r=await c.PostAsync($"/workspaces/{w}/assessments/{a}/concluir",null); Assert.Equal(HttpStatusCode.OK,r.StatusCode); Assert.Contains("\"concluido\":true",await r.Content.ReadAsStringAsync()); var ar=await c.GetFromJsonAsync<AssessmentResponse>($"/workspaces/{w}/assessments/{a}"); var wr=await c.GetFromJsonAsync<WorkspaceResponse>($"/workspaces/{w}"); Assert.Equal("concluido",ar!.Status); Assert.Equal(ar.ClientId,wr!.ClientId); Assert.Equal(0,f.Handler.RequestCount); }
+    [Fact] public async Task ConcludeSucceedsEvenWhenAnalistaIsUnreachable() { using var f=New(); f.Handler.Fail=true; var (c,w,a)=await Seed(f,"Unreachable"); var r=await c.PostAsync($"/workspaces/{w}/assessments/{a}/concluir",null); Assert.Equal(HttpStatusCode.OK,r.StatusCode); var ar=await c.GetFromJsonAsync<AssessmentResponse>($"/workspaces/{w}/assessments/{a}"); Assert.Equal("concluido",ar!.Status); Assert.Equal(0,f.Handler.RequestCount); }
     [Fact]
     public async Task UpsertRejectsOversizedContentWithoutPersisting()
     {
@@ -80,7 +83,7 @@ public sealed class AssessmentTests
         Assert.Empty(await c.GetFromJsonAsync<ClientResponse[]>("/clients") ?? Array.Empty<ClientResponse>());
     }
 
-    [Fact] public async Task UpsertValidationAndUpdateAndSearch() { using var f=New(); var c=f.CreateClient(); Assert.Equal(HttpStatusCode.UnprocessableEntity,(await c.PostAsJsonAsync("/workspaces/99/assessments",(object?)null)).StatusCode); Assert.Equal(HttpStatusCode.UnprocessableEntity,(await c.PostAsJsonAsync("/workspaces/99/assessments",new{})).StatusCode); var (c2,w,a)=await Seed(f,"Zed"); Assert.Equal(HttpStatusCode.UnprocessableEntity,(await c2.PostAsJsonAsync($"/workspaces/{w}/assessments",new{client_id=999})).StatusCode); Assert.Equal(HttpStatusCode.UnprocessableEntity,(await c2.PostAsJsonAsync($"/workspaces/{w}/assessments",new{client_name="  "})).StatusCode); Assert.Equal(HttpStatusCode.NotFound,(await c2.PostAsJsonAsync("/workspaces/99999/assessments",new{client_name="New"})).StatusCode); var u=await c2.PostAsJsonAsync($"/workspaces/{w}/assessments",new{client_name="Zed",content="updated"}); Assert.Equal(a,(await u.Content.ReadFromJsonAsync<Assessment>())!.Id); var all=await c2.GetFromJsonAsync<ClientResponse[]>("/clients"); Assert.Equal(new[]{"Zed"},all!.Select(x=>x.Name)); await c2.PostAsync($"/workspaces/{w}/assessments/{a}/concluir",null); Assert.Equal("Bearer test-token",f.Handler.Authorization); }
+    [Fact] public async Task UpsertValidationAndUpdateAndSearch() { using var f=New(); var c=f.CreateClient(); Assert.Equal(HttpStatusCode.UnprocessableEntity,(await c.PostAsJsonAsync("/workspaces/99/assessments",(object?)null)).StatusCode); Assert.Equal(HttpStatusCode.UnprocessableEntity,(await c.PostAsJsonAsync("/workspaces/99/assessments",new{})).StatusCode); var (c2,w,a)=await Seed(f,"Zed"); Assert.Equal(HttpStatusCode.UnprocessableEntity,(await c2.PostAsJsonAsync($"/workspaces/{w}/assessments",new{client_id=999})).StatusCode); Assert.Equal(HttpStatusCode.UnprocessableEntity,(await c2.PostAsJsonAsync($"/workspaces/{w}/assessments",new{client_name="  "})).StatusCode); Assert.Equal(HttpStatusCode.NotFound,(await c2.PostAsJsonAsync("/workspaces/99999/assessments",new{client_name="New"})).StatusCode); var u=await c2.PostAsJsonAsync($"/workspaces/{w}/assessments",new{client_name="Zed",content="updated"}); Assert.Equal(a,(await u.Content.ReadFromJsonAsync<Assessment>())!.Id); var all=await c2.GetFromJsonAsync<ClientResponse[]>("/clients"); Assert.Equal(new[]{"Zed"},all!.Select(x=>x.Name)); }
     [Fact]
     public async Task AssessmentCannotBeReadUpdatedOrConcludedThroughAnotherWorkspace()
     {
@@ -95,29 +98,11 @@ public sealed class AssessmentTests
     }
 
     [Fact]
-    public async Task OversizedAssessmentContentIsRejectedBeforeAnalistaCall()
-    {
-        using var f = New(); var c = f.CreateClient();
-        var w = await (await c.PostAsJsonAsync("/workspaces", new { name = "Large", platform = "github", platform_ref = Guid.NewGuid().ToString() })).Content.ReadFromJsonAsync<Workspace>();
-        var created = await c.PostAsJsonAsync($"/workspaces/{w!.Id}/assessments", new { client_name = "Large", content = new string('x', 10001) });
-        Assert.Equal(HttpStatusCode.UnprocessableEntity, created.StatusCode);
-        Assert.Empty(await c.GetFromJsonAsync<ClientResponse[]>("/clients") ?? Array.Empty<ClientResponse>());
-        Assert.Equal(HttpStatusCode.NotFound, (await c.GetAsync($"/workspaces/{w.Id}/assessments/1")).StatusCode);
-        Assert.Contains("maximum length", await created.Content.ReadAsStringAsync());
-        Assert.Null(f.Handler.Authorization);
-    }
-
-    [Fact]
     public void ProductionRejectsHttpAnalistaUrlAtStartup()
     {
         using var factory = new ProductionHttpAnalistaFactory();
         Assert.ThrowsAny<Exception>(() => factory.CreateClient());
     }
-
-    [Theory] [InlineData("{}")][InlineData("{\"dor_atendido\":true,\"pendencias\":\"bad\"}")][InlineData("{\"pendencias\":[]}")]
-    public async Task InvalidGateResponsesAre502(string body) { using var f=New(); f.Handler.Body=body; var (c,w,a)=await Seed(f); Assert.Equal(HttpStatusCode.BadGateway,(await c.PostAsync($"/workspaces/{w}/assessments/{a}/concluir",null)).StatusCode); }
-    [Fact] public async Task LastValidObjectWins() { using var f=New(); f.Handler.Body="{\"dor_atendido\":false,\"pendencias\":[\"old\"]} blah {\"dor_atendido\":true,\"pendencias\":[]}"; var (c,w,a)=await Seed(f); Assert.Contains("true",await (await c.PostAsync($"/workspaces/{w}/assessments/{a}/concluir",null)).Content.ReadAsStringAsync()); }
-    [Fact] public async Task Non2xxAndTimeoutAre502() { using var f=New(); var (c,w,a)=await Seed(f); f.Handler.StatusCode=HttpStatusCode.ServiceUnavailable; Assert.Equal(HttpStatusCode.BadGateway,(await c.PostAsync($"/workspaces/{w}/assessments/{a}/concluir",null)).StatusCode); f.Handler.StatusCode=HttpStatusCode.OK; f.Handler.Fail=true; Assert.Equal(HttpStatusCode.BadGateway,(await c.PostAsync($"/workspaces/{w}/assessments/{a}/concluir",null)).StatusCode); f.Handler.Fail=false; f.Handler.Delay=true; Assert.Equal(HttpStatusCode.BadGateway,(await c.PostAsync($"/workspaces/{w}/assessments/{a}/concluir",null)).StatusCode); }
 }
 public sealed record Workspace(long Id); public sealed record Assessment(long Id,long ClientId,string Content); public sealed record AssessmentResponse(long Id,long WorkspaceId,long ClientId,string Content,string Status,DateTime CreatedAt,DateTime UpdatedAt); public sealed record WorkspaceResponse(long Id,string Name,string Slug,string Platform,string PlatformRef,long? ClientId,string Status,DateTime CreatedAt); public sealed record ClientResponse(long Id,string Name);
 
