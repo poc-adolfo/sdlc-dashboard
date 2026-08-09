@@ -3,4 +3,7 @@ using Microsoft.Extensions.Options; namespace Backend.Api.Auth; public sealed cl
   // session cookie. Its own authentication (X-Hub-Signature-256 HMAC or Basic Auth, seção 10.1) is
   // checked inside WebhookEndpoints itself, per-workspace, not here.
   if(HttpMethods.IsPost(context.Request.Method)&&context.Request.Path.StartsWithSegments("/webhooks",StringComparison.OrdinalIgnoreCase)){await next(context);return;}
+  // k3s liveness/readiness probe (item 17 do WBS, HealthEndpoints.cs) - no session cookie exists for
+  // kubelet to present, and the endpoint itself discloses nothing beyond "the app and DB are reachable".
+  if(HttpMethods.IsGet(context.Request.Method)&&context.Request.Path.Equals("/healthz",StringComparison.OrdinalIgnoreCase)){await next(context);return;}
   var cookie=context.Request.Cookies[options.Value.CookieName];if(!sessions.Validate(cookie,DateTimeOffset.UtcNow,out var user)){logger.LogWarning("Unauthenticated request rejected: {Method} {Path}",context.Request.Method,context.Request.Path);context.Response.StatusCode=StatusCodes.Status401Unauthorized;return;}context.Items["authenticated_user"]=user!;await next(context);}}
