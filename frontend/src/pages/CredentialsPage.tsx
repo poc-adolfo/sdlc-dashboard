@@ -35,6 +35,16 @@ export function CredentialsPage() {
   const [credentials, setCredentials] = useState<Credential[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const loadSeq = useRef(0);
+  // Revisor finding on PR #26: handleSubmit closes over `load`/`workspaceId` as they were *when the
+  // submit started*. If the operator switches workspace while the POST is still in flight, the
+  // sequence guard alone doesn't help - handleSubmit's own post-await `load()` call is chronologically
+  // the *newest* call, so it would pass the seq check even though it's for the workspace that's no
+  // longer selected. This ref always holds the truly-current workspaceId so handleSubmit can check
+  // "is this still the workspace I was submitting for" instead of just "was I the last one to run".
+  const currentWorkspaceIdRef = useRef(workspaceId);
+  useEffect(() => {
+    currentWorkspaceIdRef.current = workspaceId;
+  }, [workspaceId]);
 
   const [perfil, setPerfil] = useState(PERFIS[0][0]);
   const [platformUsername, setPlatformUsername] = useState('');
@@ -72,16 +82,22 @@ export function CredentialsPage() {
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
     if (workspaceId === null) return;
+    const submittedFor = workspaceId;
     setSubmitting(true);
     setFormErrors([]);
     setFormSuccess(null);
     try {
-      await api.post(`/workspaces/${workspaceId}/credenciais`, {
+      await api.post(`/workspaces/${submittedFor}/credenciais`, {
         perfil,
         platform_username: platformUsername,
         token,
         scopes: scopes.trim().length > 0 ? scopes : undefined,
       });
+      // The workspace changed while this POST was in flight - the credential really was created for
+      // `submittedFor` (that already happened server-side and can't be undone from here), but this
+      // page is now showing a different workspace, so don't touch its form/list state for a workspace
+      // that's no longer selected.
+      if (submittedFor !== currentWorkspaceIdRef.current) return;
       // Write-only (seção 8): the token never lingers in state longer than the single request that
       // sends it, and is never shown again anywhere in this UI.
       setToken('');
@@ -90,6 +106,7 @@ export function CredentialsPage() {
       setFormSuccess(`Credencial para ${PERFIL_LABELS[perfil]} cadastrada.`);
       await load();
     } catch (error) {
+      if (submittedFor !== currentWorkspaceIdRef.current) return;
       if (error instanceof ApiError && error.status === 422) {
         const body = error.body as { errors?: string[] } | null;
         setFormErrors(body?.errors ?? ['Não foi possível cadastrar a credencial.']);

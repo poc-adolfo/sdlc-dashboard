@@ -238,4 +238,51 @@ describe('CredentialsPage', () => {
     expect(screen.getByText('recolocarme-web · Ativa')).toBeInTheDocument();
     expect(screen.queryByText('Nenhuma credencial cadastrada ainda.')).not.toBeInTheDocument();
   });
+
+  it('does not reload the wrong workspace\'s list when the workspace changes while a submit is in flight', async () => {
+    // Revisor finding on PR #26: handleSubmit closes over the workspaceId it was submitted for.
+    // Switching workspace while the POST is still pending must not let its post-success reload
+    // overwrite the *new* workspace's list with the *old* one's - the sequence guard alone doesn't
+    // catch this because the stale reload is chronologically the newest call.
+    let resolvePost!: (response: Response) => void;
+    const postPending = new Promise<Response>((resolve) => {
+      resolvePost = resolve;
+    });
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url === '/workspaces/7/credenciais' && init?.method === 'POST') return postPending;
+      if (url === '/workspaces/7/credenciais') return jsonResponse(200, []);
+      if (url === '/workspaces/8/credenciais') return jsonResponse(200, []);
+      throw new Error(`unexpected request: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(
+      <WorkspaceProvider>
+        <WorkspaceSwitcher to={8} />
+        <CredentialsPage />
+      </WorkspaceProvider>,
+    );
+    await screen.findByText('Nenhuma credencial cadastrada ainda.');
+
+    await fillAndSubmitForm();
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/workspaces/7/credenciais', expect.objectContaining({ method: 'POST' })));
+
+    // Switch workspace while that POST is still pending.
+    await userEvent.click(screen.getByRole('button', { name: 'Switch workspace' }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/workspaces/8/credenciais', expect.anything()));
+
+    // The POST for workspace 7 finally resolves. Its success handler must recognize the workspace has
+    // moved on and skip touching form/list state - in particular, it must never re-fetch
+    // /workspaces/7/credenciais (which would be the bug: reloading the wrong workspace).
+    resolvePost(jsonResponse(201, DEV_CREDENTIAL));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    const workspace7GetCalls = fetchMock.mock.calls.filter(
+      ([input, init]) => (typeof input === 'string' ? input : input.toString()) === '/workspaces/7/credenciais' && init?.method !== 'POST',
+    );
+    expect(workspace7GetCalls).toHaveLength(1); // only the initial load, no reload triggered by the stale POST
+    expect(screen.getByText('Nenhuma credencial cadastrada ainda.')).toBeInTheDocument(); // workspace 8's (empty) list, untouched
+    expect(screen.queryByText('Credencial para Analista de Requisitos cadastrada.')).not.toBeInTheDocument();
+  });
 });
