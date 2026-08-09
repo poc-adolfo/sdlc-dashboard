@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { api } from '../api/client';
 import { AuthProvider, useAuth } from './AuthContext';
 
 function jsonResponse(status: number, body: unknown) {
@@ -55,6 +56,26 @@ describe('AuthContext logout', () => {
 
     // A fresh probe (what AuthProvider does on every page load) must not silently re-authenticate.
     await userEvent.click(screen.getByRole('button', { name: 'Probar de novo' }));
+    await waitFor(() => expect(screen.getByText('status: anonymous')).toBeInTheDocument());
+  });
+
+  it('a 401 from an unrelated request elsewhere in the app also flips status to anonymous', async () => {
+    // Reported symptom: the session expires mid-page (past ExpirationMinutes), but AuthContext only
+    // ever checked once, at mount - a later request from some other screen (e.g. the Assessment
+    // client search) would 401 and just show that screen's own generic error, with no way back to
+    // /login short of a manual reload. Any 401, from any request, must now flip status immediately.
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(200, [])));
+
+    render(
+      <AuthProvider>
+        <TestConsumer />
+      </AuthProvider>,
+    );
+    expect(await screen.findByText('status: authenticated')).toBeInTheDocument();
+
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(401, {})));
+    await expect(api.get('/clients?q=SomethingUnrelated')).rejects.toThrow();
+
     await waitFor(() => expect(screen.getByText('status: anonymous')).toBeInTheDocument());
   });
 

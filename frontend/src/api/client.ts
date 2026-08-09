@@ -25,6 +25,18 @@ export class UnauthorizedError extends ApiError {
   }
 }
 
+// AuthContext only checks the session once, on mount (probeSession) - nothing re-checks it after
+// that, so a session that expires *while* the operator is on a page (e.g. mid-way through the
+// Assessment client search) previously just surfaced whatever generic error the calling component
+// happened to show, with no way back to /login short of a manual reload. AuthContext registers itself
+// here so *any* 401, from any request, flips it to 'anonymous' immediately and ProtectedRoute
+// redirects - not just the one probe request made at load time.
+let unauthorizedHandler: (() => void) | null = null;
+
+export function setUnauthorizedHandler(handler: (() => void) | null): void {
+  unauthorizedHandler = handler;
+}
+
 async function parseBody(response: Response): Promise<unknown> {
   const text = await response.text();
   if (text.length === 0) return null;
@@ -47,7 +59,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
   const body = await parseBody(response);
 
-  if (response.status === 401) throw new UnauthorizedError(body);
+  if (response.status === 401) {
+    unauthorizedHandler?.();
+    throw new UnauthorizedError(body);
+  }
   if (!response.ok) throw new ApiError(response.status, body);
 
   return body as T;
