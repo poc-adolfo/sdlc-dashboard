@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { api, ApiError } from '../api/client';
 import { useWorkspace } from '../workspace/WorkspaceContext';
 
@@ -40,18 +40,27 @@ export function SpecsPage() {
   const [outcomes, setOutcomes] = useState<Record<string, SubirUsOutcome>>({});
   const [submittingPath, setSubmittingPath] = useState<string | null>(null);
 
+  // Revisor finding on PR #24: switching workspaceId starts a new request, but a slower response for
+  // the *previous* workspace can still land after it and overwrite specs/loadError with the wrong
+  // workspace's data (same class of race QA found in AssessmentPage's client search). Bumped on every
+  // load this triggers so a response can tell whether it's still the latest.
+  const loadSeq = useRef(0);
+
   const loadSpecs = useCallback(async () => {
     if (workspaceId === null) return;
+    const seq = ++loadSeq.current;
     setLoading(true);
     setLoadError(null);
     try {
       const data = await api.get<SpecListItem[]>(`/workspaces/${workspaceId}/specs?status=rascunho`);
+      if (seq !== loadSeq.current) return; // a newer load has since started - discard
       setSpecs(data);
     } catch (error) {
+      if (seq !== loadSeq.current) return;
       setSpecs(null);
       setLoadError(error instanceof ApiError && error.status === 502 ? 'Não foi possível acessar o repositório de specs.' : 'Não foi possível carregar as specs. Tente novamente.');
     } finally {
-      setLoading(false);
+      if (seq === loadSeq.current) setLoading(false);
     }
   }, [workspaceId]);
 

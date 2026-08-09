@@ -167,4 +167,48 @@ describe('SpecsPage', () => {
     expect(await screen.findByText('Nenhuma spec em rascunho encontrada.')).toBeInTheDocument();
     expect(screen.queryByText('Checkout')).not.toBeInTheDocument();
   });
+
+  it('discards a stale, out-of-order listing response from a workspace switched away from', async () => {
+    // Revisor finding on PR #24: workspace 7's listing is still in flight when the operator switches to
+    // workspace 8 - if workspace 7's (now stale) response resolves after workspace 8's, it must not
+    // overwrite what's on screen.
+    let resolveWorkspace7!: (response: Response) => void;
+    const workspace7Pending = new Promise<Response>((resolve) => {
+      resolveWorkspace7 = resolve;
+    });
+    let resolveWorkspace8!: (response: Response) => void;
+    const workspace8Pending = new Promise<Response>((resolve) => {
+      resolveWorkspace8 = resolve;
+    });
+
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url === '/workspaces/7/specs?status=rascunho') return workspace7Pending;
+      if (url === '/workspaces/8/specs?status=rascunho') return workspace8Pending;
+      throw new Error(`unexpected request: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(
+      <WorkspaceProvider>
+        <WorkspaceSwitcher to={8} />
+        <SpecsPage />
+      </WorkspaceProvider>,
+    );
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/workspaces/7/specs?status=rascunho', expect.anything()));
+
+    await userEvent.click(screen.getByRole('button', { name: 'Switch workspace' }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/workspaces/8/specs?status=rascunho', expect.anything()));
+
+    // The newer request (workspace 8) resolves first, as it normally would.
+    const WORKSPACE_8_SPEC = { ...SPEC_A, path: 'specs/onboarding.md', title: 'Onboarding' };
+    resolveWorkspace8(jsonResponse(200, [WORKSPACE_8_SPEC]));
+    expect(await screen.findByText('Onboarding')).toBeInTheDocument();
+
+    // The older, now-stale request resolves after - it must not clobber workspace 8's listing.
+    resolveWorkspace7(jsonResponse(200, [SPEC_A]));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(screen.queryByText('Checkout')).not.toBeInTheDocument();
+    expect(screen.getByText('Onboarding')).toBeInTheDocument();
+  });
 });
