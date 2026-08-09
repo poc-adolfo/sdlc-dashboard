@@ -373,3 +373,67 @@ section input[type='text'],
   font-size: 0.85rem;
   color: var(--text-muted);
 }
+
+.credential-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-bottom: 1.5rem;
+}
+
+.credential-form select,
+.credential-form input {
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.credential-form button {
+  margin-top: 0.5rem;
+  padding: 0.7rem;
+  border: none;
+  border-radius: 6px;
+  background: var(--accent);
+  color: var(--accent-contrast);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.credential-form button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.credential-list {
+  list-style: none;
+  margin: 0.75rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.credential-list-item {
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--border);
+  border-radius: 8px;
+  padding: 0.75rem;
+  background: var(--surface);
+}
+
+.credential-list-item--active {
+  border-left-color: var(--accent);
+}
+
+.credential-perfil {
+  margin: 0;
+  font-weight: 600;
+}
+
+.credential-detail {
+  margin: 0.15rem 0;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
