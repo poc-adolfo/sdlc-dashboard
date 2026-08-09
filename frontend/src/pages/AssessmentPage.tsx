@@ -129,6 +129,24 @@ export function AssessmentPage() {
   const [concludeResult, setConcludeResult] = useState<ConcludeResult | null>(null);
   const [concludeError, setConcludeError] = useState<string | null>(null);
 
+  function resetAssessmentState() {
+    setSelectedClient(null);
+    setAssessment(null);
+    setContent('');
+    setSaveError(null);
+    setConcludeResult(null);
+    setConcludeError(null);
+  }
+
+  // QA finding on PR #22: Layout's workspace picker can change `workspaceId` at any time (it's not
+  // scoped to this page), but the loaded assessment/client were kept as-is - Salvar/Concluir would
+  // then hit the *new* workspaceId in the URL while still holding the *old* workspace's assessment id
+  // and client, updating or concluding the wrong resource. Any workspace change must start over from
+  // the client picker, never carry stale state across it.
+  useEffect(() => {
+    resetAssessmentState();
+  }, [workspaceId]);
+
   function handleAssessmentReady(loaded: Assessment, client: SelectedClient) {
     setSelectedClient(client);
     setAssessment(loaded);
@@ -138,10 +156,7 @@ export function AssessmentPage() {
   }
 
   function trocarCliente() {
-    setSelectedClient(null);
-    setAssessment(null);
-    setConcludeResult(null);
-    setConcludeError(null);
+    resetAssessmentState();
   }
 
   async function handleSave(event: FormEvent) {

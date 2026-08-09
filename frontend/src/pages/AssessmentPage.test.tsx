@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { WorkspaceProvider } from '../workspace/WorkspaceContext';
+import { WorkspaceProvider, useWorkspace } from '../workspace/WorkspaceContext';
 import { AssessmentPage } from './AssessmentPage';
 
 function jsonResponse(status: number, body: unknown) {
@@ -13,6 +13,17 @@ function renderPage() {
     <WorkspaceProvider>
       <AssessmentPage />
     </WorkspaceProvider>,
+  );
+}
+
+// Stands in for Layout's WorkspacePicker changing the shared WorkspaceContext out from under
+// AssessmentPage - both consume the same provider in the real app (App.tsx).
+function WorkspaceSwitcher({ to }: { to: number }) {
+  const { setWorkspaceId } = useWorkspace();
+  return (
+    <button type="button" onClick={() => setWorkspaceId(to)}>
+      Switch workspace
+    </button>
   );
 }
 
@@ -251,5 +262,39 @@ describe('AssessmentPage', () => {
 
     expect(screen.getByLabelText('Cliente')).toBeInTheDocument();
     expect(screen.queryByLabelText('Conteúdo')).not.toBeInTheDocument();
+  });
+
+  it('resets the loaded assessment when the workspace changes elsewhere in the app', async () => {
+    // QA finding on PR #22: Layout's workspace picker isn't scoped to this page - if it changes
+    // workspaceId while an assessment for the old workspace is loaded, Salvar/Concluir must not keep
+    // submitting against the stale assessment id/client under the new workspace's URL.
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.startsWith('/clients?q=')) return jsonResponse(200, [{ id: 1, name: 'Acme Corp' }]);
+      if (url === '/workspaces/7/assessments' && init?.method === 'POST') return jsonResponse(200, { id: 42, workspaceId: 7, clientId: 1, content: DEFAULT_CONTENT, status: 'em_andamento' });
+      throw new Error(`unexpected request: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(
+      <WorkspaceProvider>
+        <WorkspaceSwitcher to={8} />
+        <AssessmentPage />
+      </WorkspaceProvider>,
+    );
+
+    await userEvent.type(screen.getByLabelText('Cliente'), 'Acme');
+    await userEvent.click(await screen.findByRole('button', { name: 'Acme Corp' }));
+    await screen.findByLabelText('Conteúdo');
+
+    await userEvent.click(screen.getByRole('button', { name: 'Switch workspace' }));
+
+    expect(await screen.findByLabelText('Cliente')).toBeInTheDocument();
+    expect(screen.queryByLabelText('Conteúdo')).not.toBeInTheDocument();
+
+    // No request for workspace 8 should ever reference the assessment/client that belonged to
+    // workspace 7 - proves the state was actually cleared, not just visually hidden.
+    const workspace8Calls = fetchMock.mock.calls.filter(([input]) => (typeof input === 'string' ? input : input.toString()).startsWith('/workspaces/8/'));
+    expect(workspace8Calls).toHaveLength(0);
   });
 });
