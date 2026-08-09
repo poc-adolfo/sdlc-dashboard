@@ -107,6 +107,7 @@ export function DashboardPage() {
             <ul className="gate-list">
               {data.gates_pendentes.map((gate) => (
                 <li key={gate.pipeline_instance_id} className="gate-list-item">
+                  <span className="gate-chip">Aguardando</span>
                   <p className="gate-transicao">{gate.transicao}</p>
                   <p className="gate-detail">
                     {PHASE_LABELS[gate.fase_atual] ?? gate.fase_atual} · #{gate.external_ref}

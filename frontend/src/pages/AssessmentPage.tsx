@@ -220,7 +220,7 @@ export function AssessmentPage() {
           {saveError && <p role="alert">{saveError}</p>}
 
           <div className="assessment-actions">
-            <button type="submit" disabled={saving}>
+            <button type="submit" className="btn-primary" disabled={saving}>
               {saving ? 'Salvando...' : 'Salvar'}
             </button>
             <button type="button" onClick={handleConclude} disabled={concluding || saving}>

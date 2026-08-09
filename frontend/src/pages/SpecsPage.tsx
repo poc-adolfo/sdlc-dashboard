@@ -125,7 +125,7 @@ export function SpecsPage() {
               <li key={spec.path} className="spec-list-item">
                 <p className="spec-title">{spec.title}</p>
                 <p className="spec-path">{spec.path}</p>
-                <button type="button" onClick={() => handleSubirUs(spec)} disabled={submittingPath === spec.path || alreadyPublished}>
+                <button type="button" className="btn-primary" onClick={() => handleSubirUs(spec)} disabled={submittingPath === spec.path || alreadyPublished}>
                   {submittingPath === spec.path ? 'Enviando...' : alreadyPublished ? 'US enviada' : 'Subir US'}
                 </button>
 
