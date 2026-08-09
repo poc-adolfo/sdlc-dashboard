@@ -6,7 +6,7 @@ type AuthStatus = 'checking' | 'authenticated' | 'anonymous' | 'error';
 interface AuthContextValue {
   status: AuthStatus;
   login: (username: string, password: string) => Promise<void>;
-  logout: () => void;
+  logout: () => Promise<void>;
   // Re-runs the session probe - the only way out of 'error' short of a page reload.
   retry: () => void;
 }
@@ -56,11 +56,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setStatus('authenticated');
   }, []);
 
-  const logout = useCallback(() => {
-    // POST /auth/login is the only auth endpoint the spec defines (seção 14) - there is no
-    // POST /auth/logout. Clearing client-side state and letting the signed cookie expire on its own
-    // (Authentication:ExpirationMinutes) is the only logout this contract supports.
-    setStatus('anonymous');
+  const logout = useCallback(async () => {
+    // Revisor finding on PR #20: this used to only clear client-side state, leaving the HttpOnly
+    // session cookie untouched - the session stayed valid and a reload could silently re-authenticate.
+    // POST /auth/logout expires that cookie server-side (see AuthEndpoints.cs). Best-effort: if the
+    // call itself fails (network error, session already gone), still clear local state - staying on
+    // "authenticated" client-side when the operator asked to leave is worse than a cookie that outlives
+    // the UI by a few seconds until it's naturally rejected on the next request.
+    try {
+      await api.post('/auth/logout');
+    } catch {
+      // ignored - see above
+    } finally {
+      setStatus('anonymous');
+    }
   }, []);
 
   const value = useMemo(() => ({ status, login, logout, retry: checkSession }), [status, login, logout, checkSession]);
