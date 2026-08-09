@@ -222,6 +222,39 @@ public sealed class AuthAndWorkspaceTests : IClassFixture<TestApplicationFactory
     }
 
     [Fact]
+    public async Task WorkspaceListReturnsOnlyActiveWorkspacesOrderedByName()
+    {
+        using var client = await AuthenticatedClient();
+        var suffix = Guid.NewGuid().ToString("N");
+        async Task<long> Create(string name)
+        {
+            var response = await client.PostAsJsonAsync("/workspaces", new { name, platform = "github", platform_ref = $"{name}/{suffix}" });
+            response.EnsureSuccessStatusCode();
+            return (await response.Content.ReadFromJsonAsync<WorkspaceResponse>())!.Id;
+        }
+
+        await Create($"Zeta-{suffix}");
+        await Create($"Alpha-{suffix}");
+        var archivedId = await Create($"Beta-{suffix}");
+        (await client.PostAsync($"/workspaces/{archivedId}/archive", null)).EnsureSuccessStatusCode();
+
+        var workspaces = await client.GetFromJsonAsync<List<WorkspaceResponse>>("/workspaces");
+        var names = workspaces!.Select(w => w.Name).Where(n => n.EndsWith(suffix)).ToList();
+
+        Assert.DoesNotContain($"Beta-{suffix}", names);
+        var alphaIndex = names.IndexOf($"Alpha-{suffix}");
+        var zetaIndex = names.IndexOf($"Zeta-{suffix}");
+        Assert.True(alphaIndex >= 0 && zetaIndex >= 0 && alphaIndex < zetaIndex);
+    }
+
+    [Fact]
+    public async Task WorkspaceListRequiresSession()
+    {
+        using var client = _factory.CreateClient();
+        Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync("/workspaces")).StatusCode);
+    }
+
+    [Fact]
     public async Task LogoutExpiresTheCookieAndSubsequentRequestsAreUnauthorized()
     {
         using var client = await AuthenticatedClient();
