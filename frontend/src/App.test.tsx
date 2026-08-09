@@ -32,12 +32,12 @@ describe('App routing', () => {
     expect(await screen.findByRole('heading', { name: 'sdlc-dashboard' })).toBeInTheDocument();
   });
 
-  it('redirects "/" to /assessment once authenticated, and lets the operator move between the four tabs', async () => {
+  it('redirects "/" to /workspace once authenticated, and lets the operator move between the three tabs', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(200, [])));
 
     renderApp('/');
 
-    expect(await screen.findByRole('heading', { name: 'Assessment' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Workspace' })).toBeInTheDocument();
 
     await userEvent.click(screen.getByRole('link', { name: 'Specs' }));
     expect(await screen.findByRole('heading', { name: 'Specs' })).toBeInTheDocument();
@@ -45,8 +45,8 @@ describe('App routing', () => {
     await userEvent.click(screen.getByRole('link', { name: 'Dashboard' }));
     expect(await screen.findByRole('heading', { name: 'Dashboard' })).toBeInTheDocument();
 
-    await userEvent.click(screen.getByRole('link', { name: 'Credenciais' }));
-    expect(await screen.findByRole('heading', { name: 'Credenciais' })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('link', { name: 'Workspace' }));
+    expect(await screen.findByRole('heading', { name: 'Workspace' })).toBeInTheDocument();
   });
 
   it('redirects an unknown path back into the app instead of a blank/broken screen', async () => {
@@ -54,7 +54,7 @@ describe('App routing', () => {
 
     renderApp('/does-not-exist');
 
-    expect(await screen.findByRole('heading', { name: 'Assessment' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Workspace' })).toBeInTheDocument();
   });
 
   it('deep-linking to a protected route while unauthenticated still lands on /login, not a blank page', async () => {
