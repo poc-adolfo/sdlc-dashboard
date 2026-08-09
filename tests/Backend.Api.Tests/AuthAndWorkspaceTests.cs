@@ -222,6 +222,33 @@ public sealed class AuthAndWorkspaceTests : IClassFixture<TestApplicationFactory
     }
 
     [Fact]
+    public async Task LogoutExpiresTheCookieAndSubsequentRequestsAreUnauthorized()
+    {
+        using var client = await AuthenticatedClient();
+        Assert.NotEqual(HttpStatusCode.Unauthorized, (await client.GetAsync("/workspaces/1")).StatusCode); // sanity: session works before logout
+
+        var logout = await client.PostAsync("/auth/logout", null);
+
+        Assert.Equal(HttpStatusCode.OK, logout.StatusCode);
+        var setCookie = logout.Headers.GetValues("Set-Cookie").Single();
+        Assert.Contains("sdlc_session=", setCookie);
+        Assert.Contains("expires=Thu, 01 Jan 1970", setCookie, StringComparison.OrdinalIgnoreCase);
+
+        // HandleCookies=true means the HttpClient's own cookie container honors that expiry, same as a
+        // real browser would - this is what proves logout actually stops the cookie being sent, not
+        // just that the response looked right.
+        Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync("/workspaces/1")).StatusCode);
+    }
+
+    [Fact]
+    public async Task LogoutWithoutASessionIsUnauthorized()
+    {
+        using var client = _factory.CreateClient();
+
+        Assert.Equal(HttpStatusCode.Unauthorized, (await client.PostAsync("/auth/logout", null)).StatusCode);
+    }
+
+    [Fact]
     public async Task MissingCookieAndMalformedCookieAreRejected()
     {
         using var missing = _factory.CreateClient();
