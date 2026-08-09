@@ -58,6 +58,8 @@ input {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 0.5rem;
+  flex-wrap: wrap;
   padding: 0.75rem 1rem;
   border-bottom: 1px solid var(--border);
   background: var(--surface);
@@ -65,6 +67,35 @@ input {
 
 .app-title {
   font-weight: 600;
+}
+
+.workspace-picker {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.85rem;
+}
+
+.workspace-picker label {
+  color: var(--text-muted);
+}
+
+.workspace-picker input {
+  width: 4.5rem;
+  padding: 0.3rem 0.4rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.workspace-picker button {
+  padding: 0.3rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--text);
+  cursor: pointer;
 }
 
 .app-content {
@@ -179,4 +210,72 @@ input {
   color: var(--danger);
   font-size: 0.85rem;
   margin: 0;
+}
+
+section > label,
+section textarea,
+section input[type='text'],
+#client-search {
+  display: block;
+  width: 100%;
+}
+
+#client-search {
+  margin: 0.5rem 0;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.client-results {
+  list-style: none;
+  margin: 0.5rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.client-results button {
+  width: 100%;
+  text-align: left;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+}
+
+#assessment-content {
+  margin: 0.5rem 0 1rem;
+  padding: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  resize: vertical;
+}
+
+.assessment-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.assessment-actions button {
+  padding: 0.6rem 1.1rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--accent);
+  color: var(--accent-contrast);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.assessment-actions button:disabled {
+  opacity: 0.6;
+  cursor: default;
 }
