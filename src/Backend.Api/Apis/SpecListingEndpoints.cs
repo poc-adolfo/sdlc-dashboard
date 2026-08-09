@@ -71,11 +71,17 @@ public static class SpecListingEndpoints
 
         var query = db.Specs.AsNoTracking().Where(s => s.WorkspaceId == id);
         if (!string.IsNullOrWhiteSpace(status)) query = query.Where(s => s.Status == status);
-        var specs = await query.OrderBy(s => s.Path)
-            .Select(s => new SpecListItem(s.Path, s.Title, s.Status, s.Version, s.UpdatedAt))
-            .ToListAsync(ct);
-        return Results.Ok(specs);
+        var specs = await query.OrderBy(s => s.Path).ToListAsync(ct);
+        var items = specs.Select(s => new SpecListItem(s.Path, s.Title, s.Status, s.Version, s.UpdatedAt, SubirUsPath(s.Path, directory))).ToList();
+        return Results.Ok(items);
     }
+
+    // POST /workspaces/{id}/specs/{path}/subir-us (SpecUsEndpoints) expects {path} relative to
+    // specs_path, not the full repo path this endpoint indexes `spec.path` as - the frontend has no
+    // other way to derive that segment (specs_path isn't exposed via WorkspaceResponse), so hand it
+    // back pre-computed alongside the full path instead of making every caller re-derive it.
+    internal static string SubirUsPath(string fullPath, string directory) =>
+        directory.Length > 0 && fullPath.StartsWith(directory + "/", StringComparison.Ordinal) ? fullPath[(directory.Length + 1)..] : fullPath;
 
     internal static string? ParseStatus(string content)
     {
@@ -101,4 +107,4 @@ public static class SpecListingEndpoints
     }
 }
 
-public sealed record SpecListItem(string Path, string Title, string Status, int Version, DateTime UpdatedAt);
+public sealed record SpecListItem(string Path, string Title, string Status, int Version, DateTime UpdatedAt, string SubirUsPath);

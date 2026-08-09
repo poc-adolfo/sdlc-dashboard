@@ -59,6 +59,7 @@ public sealed class SpecListingEndpointsTests
         Assert.Equal("rascunho.md", items[0].GetProperty("path").GetString());
         Assert.Equal("Rascunho spec", items[0].GetProperty("title").GetString());
         Assert.Equal("rascunho", items[0].GetProperty("status").GetString());
+        Assert.Equal("rascunho.md", items[0].GetProperty("subirUsPath").GetString());
     }
 
     [Fact]
@@ -212,11 +213,25 @@ public sealed class SpecListingEndpointsTests
         var items = await response.Content.ReadFromJsonAsync<JsonElement>();
         Assert.Equal(1, items.GetArrayLength());
         Assert.Equal("specs/spec.md", items[0].GetProperty("path").GetString());
+        // POST /workspaces/{id}/specs/{path}/subir-us (SpecUsEndpoints) expects {path} relative to
+        // specs_path, not the full path this endpoint indexes spec.path as - the frontend has no other
+        // way to derive that segment, so it must come back pre-computed here (item 12 of the WBS).
+        Assert.Equal("spec.md", items[0].GetProperty("subirUsPath").GetString());
     }
 }
 
 public sealed class SpecListingParsingTests
 {
+    [Theory]
+    [InlineData("specs/foo.md", "specs", "foo.md")]
+    [InlineData("foo.md", "", "foo.md")]
+    [InlineData("docs/specs/foo.md", "docs/specs", "foo.md")]
+    [InlineData("specs-overview.md", "specs", "specs-overview.md")] // not actually under "specs/" - no false-positive prefix strip
+    public void SubirUsPathStripsTheConfiguredDirectoryPrefix(string fullPath, string directory, string expected)
+    {
+        Assert.Equal(expected, SpecListingEndpoints.SubirUsPath(fullPath, directory));
+    }
+
     [Theory]
     [InlineData("> Status: rascunho (2026-08-05).", "rascunho")]
     [InlineData("> Status: Rascunho (2026-08-05).", "rascunho")]
