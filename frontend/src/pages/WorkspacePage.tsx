@@ -33,6 +33,11 @@ function WorkspaceDetailsSection({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
+  // Collapsible once there's something to collapse (an existing, already-filled-in workspace) - starts
+  // open so create mode (nothing to hide yet) and first-time editing both show the fields right away.
+  // Controlled (not just a static `open` attribute) so a re-render from unrelated state here (saving,
+  // editing a field) doesn't fight the operator's own manual toggle.
+  const [detailsOpen, setDetailsOpen] = useState(true);
   // Same request-sequence guard used throughout this app: a slower response for a workspace switched
   // away from must not overwrite the fields for whichever one is on screen now.
   const loadSeq = useRef(0);
@@ -95,31 +100,51 @@ function WorkspaceDetailsSection({
 
   return (
     <form onSubmit={handleSubmit} className="workspace-details-form">
-      <label htmlFor="workspace-name">Nome</label>
-      <input id="workspace-name" value={name} onChange={(e) => setName(e.target.value)} disabled={submitting} required />
+      <details
+        className="workspace-details-accordion"
+        open={detailsOpen}
+        onToggle={(e) => setDetailsOpen(e.currentTarget.open)}
+      >
+        <summary>{workspaceId === null ? 'Novo workspace' : name || 'Workspace'}</summary>
+        <div className="workspace-details-accordion-body">
+          <div className="field-group">
+            <span className="field-group-label">Identificação</span>
+            <label htmlFor="workspace-name">Nome</label>
+            <input id="workspace-name" value={name} onChange={(e) => setName(e.target.value)} disabled={submitting} required />
+          </div>
 
-      <label htmlFor="workspace-platform">Plataforma</label>
-      <select id="workspace-platform" value={platform} onChange={(e) => setPlatform(e.target.value as 'github' | 'azure_devops')} disabled={submitting}>
-        <option value="github">GitHub</option>
-        <option value="azure_devops">Azure DevOps</option>
-      </select>
+          <div className="field-group">
+            <span className="field-group-label">Publicação</span>
+            <div className="field-group-row">
+              <div>
+                <label htmlFor="workspace-platform">Plataforma</label>
+                <select id="workspace-platform" value={platform} onChange={(e) => setPlatform(e.target.value as 'github' | 'azure_devops')} disabled={submitting}>
+                  <option value="github">GitHub</option>
+                  <option value="azure_devops">Azure DevOps</option>
+                </select>
+              </div>
+              <div>
+                <label htmlFor="workspace-platform-ref">Repositório/Projeto</label>
+                <input
+                  id="workspace-platform-ref"
+                  value={platformRef}
+                  onChange={(e) => setPlatformRef(e.target.value)}
+                  placeholder="org/repo"
+                  disabled={submitting}
+                  required
+                />
+              </div>
+            </div>
+          </div>
 
-      <label htmlFor="workspace-platform-ref">Repositório/Projeto</label>
-      <input
-        id="workspace-platform-ref"
-        value={platformRef}
-        onChange={(e) => setPlatformRef(e.target.value)}
-        placeholder="org/repo"
-        disabled={submitting}
-        required
-      />
+          {error && <p role="alert">{error}</p>}
+          {saved && <p role="status">Workspace atualizado.</p>}
 
-      {error && <p role="alert">{error}</p>}
-      {saved && <p role="status">Workspace atualizado.</p>}
-
-      <button type="submit" className="btn-primary" disabled={submitting}>
-        {submitting ? 'Salvando...' : workspaceId === null ? 'Criar workspace' : 'Salvar'}
-      </button>
+          <button type="submit" className="btn-primary" disabled={submitting}>
+            {submitting ? 'Salvando...' : workspaceId === null ? 'Criar workspace' : 'Salvar'}
+          </button>
+        </div>
+      </details>
     </form>
   );
 }

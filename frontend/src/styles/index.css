@@ -1,68 +1,69 @@
 :root {
-  --bg: #fafafc;
-  --surface: #f3f2f7;
-  --surface-2: #eae8f1;
-  --text: #1c1b23;
-  --text-muted: #6d6b78;
-  --border: #e3e1ea;
-  --accent: #4f46e5;
+  --bg: #fbfaf9;
+  --surface: #f4f2f0;
+  --surface-2: #ebe8e4;
+  --text: #221f1c;
+  --text-muted: #736c64;
+  --border: #e2ddd6;
+  --accent: #2f4a3e;
   --accent-contrast: #ffffff;
-  --accent-wash: #eeecfb;
-  --danger: #c0362c;
-  --success: #1f8a55;
-  --warning: #a6720b;
-  --warning-wash: #fbf1dc;
+  --accent-wash: #e6ebe8;
+  --danger: #b8433a;
+  --success: #1d6f9f;
+  --warning: #93650f;
+  --warning-wash: #f7ecd9;
   --font: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --font-display: ui-serif, Georgia, 'Iowan Old Style', 'Palatino Linotype', 'Book Antiqua', serif;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #17161d;
-    --surface: #1f1e28;
-    --surface-2: #262532;
-    --text: #ece9f2;
-    --text-muted: #9c99a8;
-    --border: #322f3d;
-    --accent: #8b7bf7;
-    --accent-contrast: #0e0c14;
-    --accent-wash: #26223f;
-    --danger: #f28b82;
-    --success: #5fc98c;
+    --bg: #17140f;
+    --surface: #1e1a15;
+    --surface-2: #262019;
+    --text: #ede8e1;
+    --text-muted: #a59d92;
+    --border: #302a22;
+    --accent: #7fa88f;
+    --accent-contrast: #0e1512;
+    --accent-wash: #202a24;
+    --danger: #e8998f;
+    --success: #6bb0e0;
     --warning: #e0b34a;
-    --warning-wash: #332a15;
+    --warning-wash: #2c2412;
   }
 }
 
 :root[data-theme='dark'] {
-  --bg: #17161d;
-  --surface: #1f1e28;
-  --surface-2: #262532;
-  --text: #ece9f2;
-  --text-muted: #9c99a8;
-  --border: #322f3d;
-  --accent: #8b7bf7;
-  --accent-contrast: #0e0c14;
-  --accent-wash: #26223f;
-  --danger: #f28b82;
-  --success: #5fc98c;
+  --bg: #17140f;
+  --surface: #1e1a15;
+  --surface-2: #262019;
+  --text: #ede8e1;
+  --text-muted: #a59d92;
+  --border: #302a22;
+  --accent: #7fa88f;
+  --accent-contrast: #0e1512;
+  --accent-wash: #202a24;
+  --danger: #e8998f;
+  --success: #6bb0e0;
   --warning: #e0b34a;
-  --warning-wash: #332a15;
+  --warning-wash: #2c2412;
 }
 
 :root[data-theme='light'] {
-  --bg: #fafafc;
-  --surface: #f3f2f7;
-  --surface-2: #eae8f1;
-  --text: #1c1b23;
-  --text-muted: #6d6b78;
-  --border: #e3e1ea;
-  --accent: #4f46e5;
+  --bg: #fbfaf9;
+  --surface: #f4f2f0;
+  --surface-2: #ebe8e4;
+  --text: #221f1c;
+  --text-muted: #736c64;
+  --border: #e2ddd6;
+  --accent: #2f4a3e;
   --accent-contrast: #ffffff;
-  --accent-wash: #eeecfb;
-  --danger: #c0362c;
-  --success: #1f8a55;
-  --warning: #a6720b;
-  --warning-wash: #fbf1dc;
+  --accent-wash: #e6ebe8;
+  --danger: #b8433a;
+  --success: #1d6f9f;
+  --warning: #93650f;
+  --warning-wash: #f7ecd9;
 }
 
 * {
@@ -77,25 +78,30 @@ body,
 
 body {
   margin: 0;
-  font: 15px/1.55 var(--font);
+  font: 14.5px/1.55 var(--font);
   color: var(--text);
   background: var(--bg);
 }
 
+/* Serif/sans pairing ("Editorial Fino" direction) - a restrained display face for headings, carried by
+   contrast with the sans body rather than any loaded font file (keeps the CSP-friendly zero-webfont
+   footprint this app has had from the start). */
 h1,
 h2,
 h3 {
+  font-family: var(--font-display);
+  font-weight: 600;
   text-wrap: balance;
-  letter-spacing: -0.01em;
+  letter-spacing: 0;
 }
 
 section > h1 {
-  font-size: 1.15rem;
+  font-size: 1.2rem;
   margin: 0 0 1rem;
 }
 
 section > h2 {
-  font-size: 0.95rem;
+  font-size: 1rem;
   margin: 1.5rem 0 0.75rem;
 }
 
@@ -104,7 +110,7 @@ section > h2 {
    further where a button plays a different role entirely. */
 button {
   font: inherit;
-  padding: 0.55rem 0.9rem;
+  padding: 0.5rem 0.85rem;
   border: 1px solid var(--border);
   border-radius: 7px;
   background: var(--surface);
@@ -164,14 +170,15 @@ textarea {
   justify-content: space-between;
   gap: 0.6rem;
   flex-wrap: wrap;
-  padding: 0.75rem 1rem;
+  padding: 0.7rem 1rem;
   border-bottom: 1px solid var(--border);
   background: var(--surface);
 }
 
 .app-title {
-  font-weight: 700;
-  letter-spacing: -0.01em;
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 1.05rem;
 }
 
 .workspace-picker {
@@ -187,7 +194,7 @@ textarea {
 }
 
 .workspace-picker select {
-  padding: 0.35rem 0.5rem;
+  padding: 0.3rem 0.45rem;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--bg);
@@ -196,7 +203,7 @@ textarea {
 }
 
 .workspace-picker button {
-  padding: 0.35rem 0.65rem;
+  padding: 0.32rem 0.6rem;
   font-size: 0.85rem;
 }
 
@@ -210,13 +217,14 @@ textarea {
 }
 
 .workspace-details-form label {
-  font-size: 0.78rem;
+  font-size: 0.76rem;
   color: var(--text-muted);
 }
 
 .workspace-details-form input,
 .workspace-details-form select {
-  padding: 0.55rem 0.7rem;
+  padding: 0.42rem 0.55rem;
+  font-size: 0.92rem;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--bg);
@@ -226,6 +234,88 @@ textarea {
 .workspace-details-form button {
   margin-top: 0.25rem;
   align-self: flex-start;
+}
+
+/* Collapsible once there's something worth hiding (seção 4) - plain <details>/<summary>, no JS needed
+   for the toggle itself. */
+.workspace-details-accordion {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.workspace-details-accordion summary {
+  cursor: pointer;
+  padding: 0.65rem 0.85rem;
+  font-weight: 600;
+  font-size: 0.92rem;
+  list-style: none;
+}
+
+.workspace-details-accordion summary::-webkit-details-marker {
+  display: none;
+}
+
+.workspace-details-accordion summary::before {
+  content: '▸';
+  display: inline-block;
+  width: 1em;
+  margin-right: 0.35rem;
+  color: var(--text-muted);
+  transition: transform 0.15s ease;
+}
+
+.workspace-details-accordion[open] summary::before {
+  transform: rotate(90deg);
+}
+
+.workspace-details-accordion summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.workspace-details-accordion-body {
+  padding: 0.15rem 0.85rem 0.85rem;
+  border-top: 1px solid var(--border);
+  margin-top: 0.1rem;
+  padding-top: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+/* Field grouping ("campos agrupados em seções mais claras") - a labeled box around related fields, used
+   wherever a form has more than one logical group (e.g. workspace identity vs. platform/publishing) so
+   they don't blur together as one undifferentiated stack. */
+.field-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.65rem 0.75rem 0.75rem;
+  background: var(--surface-2);
+}
+
+.field-group-label {
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+}
+
+.field-group-row {
+  display: flex;
+  gap: 0.6rem;
+}
+
+.field-group-row > div {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
 }
 
 .app-content {
@@ -324,7 +414,7 @@ textarea {
 }
 
 .login-form h1 {
-  font-size: 1.25rem;
+  font-size: 1.3rem;
   text-align: center;
   margin-bottom: 1rem;
 }
@@ -335,7 +425,7 @@ textarea {
 }
 
 .login-form input {
-  padding: 0.6rem 0.75rem;
+  padding: 0.45rem 0.6rem;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--bg);
@@ -344,7 +434,7 @@ textarea {
 
 .login-form button {
   margin-top: 0.75rem;
-  padding: 0.7rem;
+  padding: 0.6rem;
   border: none;
   border-radius: 6px;
   background: var(--accent);
@@ -368,7 +458,7 @@ section input[type='text'],
 
 #client-search {
   margin: 0.5rem 0;
-  padding: 0.6rem 0.75rem;
+  padding: 0.45rem 0.6rem;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--bg);
@@ -387,13 +477,13 @@ section input[type='text'],
 .client-results button {
   width: 100%;
   text-align: left;
-  padding: 0.6rem 0.75rem;
+  padding: 0.5rem 0.6rem;
   background: var(--surface);
 }
 
 #assessment-content {
   margin: 0.5rem 0 1rem;
-  padding: 0.75rem;
+  padding: 0.65rem;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--bg);
@@ -408,7 +498,7 @@ section input[type='text'],
 }
 
 .assessment-actions button {
-  padding: 0.6rem 1.1rem;
+  padding: 0.55rem 1rem;
   font-weight: 600;
 }
 
@@ -416,7 +506,7 @@ section input[type='text'],
   display: block;
   width: 100%;
   margin: 0.5rem 0 1rem;
-  padding: 0.75rem;
+  padding: 0.65rem;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--bg);
@@ -599,7 +689,7 @@ section input[type='text'],
 }
 
 .credential-inline-form input {
-  padding: 0.5rem 0.65rem;
+  padding: 0.4rem 0.55rem;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--bg);
@@ -658,7 +748,7 @@ section input[type='text'],
 
 .spec-chat-form textarea {
   width: 100%;
-  padding: 0.6rem 0.75rem;
+  padding: 0.5rem 0.65rem;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--bg);

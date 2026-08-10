@@ -117,6 +117,31 @@ describe('WorkspacePage - creating/editing the workspace', () => {
 
     expect(await screen.findByText('Plataforma e repositório não podem ser alterados depois que o ciclo já começou para este workspace.')).toBeInTheDocument();
   });
+
+  it('the workspace section is a collapsible accordion, open by default, showing the name once collapsed', async () => {
+    localStorage.setItem('sdlc-dashboard:workspaceId', String(WORKSPACE.id));
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url === `/workspaces/${WORKSPACE.id}`) return jsonResponse(200, WORKSPACE);
+      if (url === '/workspaces') return jsonResponse(200, [WORKSPACE]);
+      if (url === `/workspaces/${WORKSPACE.id}/credenciais`) return jsonResponse(200, []);
+      throw new Error(`unexpected request: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    renderPage();
+    await waitFor(async () => expect(await screen.findByLabelText('Nome')).toHaveValue('Acme Platform'));
+
+    const summary = screen.getByText('Acme Platform', { selector: 'summary' });
+    await userEvent.click(summary);
+
+    // jsdom keeps a closed <details>'s children in the DOM (it doesn't run layout/CSS), so
+    // "collapsed" here means not visible, not absent - toBeInTheDocument would pass either way.
+    expect(screen.getByLabelText('Nome')).not.toBeVisible();
+    expect(screen.getByText('Acme Platform', { selector: 'summary' })).toBeVisible(); // the summary itself, still visible collapsed
+
+    await userEvent.click(summary);
+    expect(await screen.findByLabelText('Nome')).toHaveValue('Acme Platform');
+  });
 });
 
 describe('WorkspacePage - Assessment section', () => {
