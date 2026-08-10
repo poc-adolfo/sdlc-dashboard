@@ -236,6 +236,54 @@ textarea {
   align-self: flex-start;
 }
 
+/* Collapsible once there's something worth hiding (seção 4) - plain <details>/<summary>, no JS needed
+   for the toggle itself. */
+.workspace-details-accordion {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.workspace-details-accordion summary {
+  cursor: pointer;
+  padding: 0.65rem 0.85rem;
+  font-weight: 600;
+  font-size: 0.92rem;
+  list-style: none;
+}
+
+.workspace-details-accordion summary::-webkit-details-marker {
+  display: none;
+}
+
+.workspace-details-accordion summary::before {
+  content: '▸';
+  display: inline-block;
+  width: 1em;
+  margin-right: 0.35rem;
+  color: var(--text-muted);
+  transition: transform 0.15s ease;
+}
+
+.workspace-details-accordion[open] summary::before {
+  transform: rotate(90deg);
+}
+
+.workspace-details-accordion summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.workspace-details-accordion-body {
+  padding: 0.15rem 0.85rem 0.85rem;
+  border-top: 1px solid var(--border);
+  margin-top: 0.1rem;
+  padding-top: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
 /* Field grouping ("campos agrupados em seções mais claras") - a labeled box around related fields, used
    wherever a form has more than one logical group (e.g. workspace identity vs. platform/publishing) so
    they don't blur together as one undifferentiated stack. */
