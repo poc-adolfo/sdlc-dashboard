@@ -25,16 +25,6 @@ public sealed class WorkspaceLifecycleTests
         Content = JsonContent.Create(new { choices = new[] { new { message = new { content = dorJson } } } })
     };
 
-    private static HttpResponseMessage GitHubContentResponse(string markdown) => new(HttpStatusCode.OK)
-    {
-        Content = JsonContent.Create(new { content = Convert.ToBase64String(Encoding.UTF8.GetBytes(markdown)) })
-    };
-
-    private static HttpResponseMessage GitHubDirectoryResponse(params (string Name, string Path, string Type)[] entries) => new(HttpStatusCode.OK)
-    {
-        Content = JsonContent.Create(entries.Select(e => new { name = e.Name, path = e.Path, type = e.Type }).ToArray())
-    };
-
     private static async Task<HttpClient> AuthenticatedClient(SpecUsApplicationFactory factory)
     {
         var client = factory.CreateClient(new WebApplicationFactoryClientOptions { HandleCookies = true });
@@ -106,9 +96,6 @@ public sealed class WorkspaceLifecycleTests
         var workspaceId = await CreateGitHubWorkspace(client);
 
         factory.Handler.On(r => r.RequestUri!.Host == "analista.test", _ => AnalistaResponse(DorApproved));
-        factory.Handler.On(r => r.Method == HttpMethod.Get && r.RequestUri!.AbsolutePath == "/repos/acme/platform/contents/", _ =>
-            GitHubDirectoryResponse(("spec.md", "spec.md", "file")));
-        factory.Handler.On(r => r.Method == HttpMethod.Get && r.RequestUri!.AbsolutePath == "/repos/acme/platform/contents/spec.md", _ => GitHubContentResponse(SpecMarkdown));
         factory.Handler.On(r => r.Method == HttpMethod.Post && r.RequestUri!.AbsolutePath.EndsWith("/issues"), _ => new HttpResponseMessage(HttpStatusCode.Created) { Content = JsonContent.Create(new { number = 55 }) });
 
         // Build up real history through the actual endpoints - not seeded directly - so this test
@@ -118,8 +105,13 @@ public sealed class WorkspaceLifecycleTests
         var assessmentId = (await assessment.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetInt64();
         (await client.PostAsync($"/workspaces/{workspaceId}/assessments/{assessmentId}/concluir", null)).EnsureSuccessStatusCode();
 
-        (await client.GetAsync($"/workspaces/{workspaceId}/specs")).EnsureSuccessStatusCode(); // on-demand sync indexes spec.md
-        var subirUs = await client.PostAsync($"/workspaces/{workspaceId}/specs/spec.md/subir-us", content: null);
+        // Concluir sets workspace.client_id (from assessment.client_id) - that's the storage prefix key,
+        // only known now, not at workspace-creation time above.
+        var clientId = (await client.GetFromJsonAsync<JsonElement>($"/workspaces/{workspaceId}")).GetProperty("clientId").GetInt64();
+        factory.Storage.Seed(clientId.ToString(), "checkout", "spec.md", SpecMarkdown);
+
+        (await client.GetAsync($"/workspaces/{workspaceId}/spec-projects/checkout/specs")).EnsureSuccessStatusCode(); // on-demand sync indexes spec.md
+        var subirUs = await client.PostAsync($"/workspaces/{workspaceId}/spec-projects/checkout/specs/spec.md/subir-us", content: null);
         Assert.Equal(HttpStatusCode.Created, subirUs.StatusCode);
 
         var archive = await client.PostAsync($"/workspaces/{workspaceId}/archive", null);
@@ -132,8 +124,8 @@ public sealed class WorkspaceLifecycleTests
         Assert.Equal("concluido", assessmentAfterArchive.GetProperty("status").GetString());
         Assert.Equal("notas do assessment", assessmentAfterArchive.GetProperty("content").GetString());
 
-        var specsAfterArchive = await client.GetFromJsonAsync<JsonElement>($"/workspaces/{workspaceId}/specs");
-        Assert.Contains(specsAfterArchive.EnumerateArray(), s => s.GetProperty("path").GetString() == "spec.md");
+        var specsAfterArchive = await client.GetFromJsonAsync<JsonElement>($"/workspaces/{workspaceId}/spec-projects/checkout/specs");
+        Assert.Contains(specsAfterArchive.EnumerateArray(), s => s.GetProperty("fileName").GetString() == "spec.md");
 
         var dashboardAfterArchive = await client.GetFromJsonAsync<JsonElement>($"/workspaces/{workspaceId}/dashboard");
         Assert.Equal(1, dashboardAfterArchive.GetProperty("contagens").GetProperty("Requisitos").GetInt32());

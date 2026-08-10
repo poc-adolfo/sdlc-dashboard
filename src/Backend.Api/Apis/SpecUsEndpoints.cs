@@ -13,23 +13,21 @@ public static class SpecUsEndpoints
 {
     public static IEndpointRouteBuilder MapSpecUsEndpoints(this IEndpointRouteBuilder app)
     {
-        app.MapPost("/workspaces/{id:long}/specs/{**path}", Handle);
+        app.MapPost("/workspaces/{id:long}/spec-projects/{projeto}/specs/{fileName}/subir-us", Handle);
         return app;
     }
 
-    private static async Task<IResult> Handle(long id, string path, AppDbContext db, PlatformContentClient platform, AnalystDorGate gate, ILoggerFactory logs, CancellationToken ct)
+    private static async Task<IResult> Handle(long id, string projeto, string fileName, AppDbContext db, ISpecStorage storage, PlatformContentClient platform, AnalystDorGate gate, ILoggerFactory logs, CancellationToken ct)
     {
-        if (!path.EndsWith("/subir-us", StringComparison.OrdinalIgnoreCase)) return Results.NotFound();
-        var specPath = path[..^"/subir-us".Length].TrimStart('/');
+        if (!SpecStoragePathSegment.IsValid(projeto) || !SpecStoragePathSegment.IsValid(fileName)) return Results.NotFound();
 
         var workspace = await db.Workspaces.SingleOrDefaultAsync(w => w.Id == id, ct);
         if (workspace is null) return Results.NotFound();
+        if (workspace.ClientId is null)
+            return Results.UnprocessableEntity(new { errors = new[] { "workspace: conclua o assessment antes de subir uma US (client_id ainda não definido)" } });
 
-        var fullPath = string.IsNullOrWhiteSpace(workspace.SpecsPath) ? specPath : workspace.SpecsPath.TrimEnd('/') + "/" + specPath;
-        var repo = workspace.SpecsRepo ?? workspace.PlatformRef;
-
-        var fetched = await platform.FetchFileAsync(workspace, repo, fullPath, ct);
-        if (fetched is null) return Results.StatusCode(StatusCodes.Status502BadGateway);
+        var fetched = await storage.GetContentAsync(workspace.ClientId.Value.ToString(System.Globalization.CultureInfo.InvariantCulture), projeto, fileName, ct);
+        if (fetched is null) return Results.NotFound();
 
         var dor = await gate.CheckAsync(fetched, ct);
         if (dor is null) return Results.StatusCode(StatusCodes.Status502BadGateway);
@@ -38,15 +36,17 @@ public static class SpecUsEndpoints
         var body = Extract(fetched, logs.CreateLogger("SpecUsEndpoints"));
         var title = Regex.Match(fetched, @"(?m)^#\s+(.+?)\s*$").Groups[1].Value.Trim();
         if (title.Length == 0) title = "Sem titulo";
-        if (workspace.SpecsRepo is not null && !string.Equals(workspace.SpecsRepo, workspace.PlatformRef, StringComparison.OrdinalIgnoreCase))
-            body += $"\n\n---\n\n<details>\n<summary>Spec completa: {specPath}</summary>\n\n```markdown\n{fetched}\n```\n\n</details>";
+        // Specs now live in blob storage (seção 5.2 update), never in the code repo the Issue/work item
+        // is created in - unlike the old git-based flow, the full spec is always attached, there's no
+        // "same repo" case where a reader could just open the source file next to the Issue.
+        var specPath = $"{projeto}/{fileName}";
+        body += $"\n\n---\n\n<details>\n<summary>Spec completa: {specPath}</summary>\n\n```markdown\n{fetched}\n```\n\n</details>";
 
         var external = await Publish(workspace, title, body, platform, ct);
         if (external is null) return Results.StatusCode(StatusCodes.Status502BadGateway);
 
-        // Spec.Path in the index (SpecListingEndpoints) is always the full repo-relative path, same as
-        // fullPath here - not specPath, which is only the route segment after specs_path is stripped.
-        var spec = await db.Specs.SingleOrDefaultAsync(x => x.WorkspaceId == id && x.Path == fullPath, ct);
+        // Spec.Path in the index (SpecStorageEndpoints) is always "{projeto}/{fileName}".
+        var spec = await db.Specs.SingleOrDefaultAsync(x => x.WorkspaceId == id && x.Path == specPath, ct);
 
         // Security review on PR #17: an Issue's label/body is writable by anyone with repo triage
         // permission, so ReconciliationPollerService can't treat either as proof "Subir US" created

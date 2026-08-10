@@ -35,7 +35,7 @@ export function DashboardPage() {
   const [data, setData] = useState<DashboardResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // Same request-sequence guard as AssessmentPage/SpecsPage (Revisor/QA findings on PR #22/#24): a
+  // Same request-sequence guard as WorkspacePage's sections/SpecsPage (Revisor/QA findings on PR #22/#24): a
   // slower response for a workspace switched away from must not overwrite what's on screen.
   const loadSeq = useRef(0);
 
@@ -107,6 +107,7 @@ export function DashboardPage() {
             <ul className="gate-list">
               {data.gates_pendentes.map((gate) => (
                 <li key={gate.pipeline_instance_id} className="gate-list-item">
+                  <span className="gate-chip">Aguardando</span>
                   <p className="gate-transicao">{gate.transicao}</p>
                   <p className="gate-detail">
                     {PHASE_LABELS[gate.fase_atual] ?? gate.fase_atual} · #{gate.external_ref}
