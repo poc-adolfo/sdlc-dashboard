@@ -35,7 +35,7 @@ export function DashboardPage() {
   const [data, setData] = useState<DashboardResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // Same request-sequence guard as AssessmentPage/SpecsPage (Revisor/QA findings on PR #22/#24): a
+  // Same request-sequence guard as WorkspacePage's sections/SpecsPage (Revisor/QA findings on PR #22/#24): a
   // slower response for a workspace switched away from must not overwrite what's on screen.
   const loadSeq = useRef(0);
 

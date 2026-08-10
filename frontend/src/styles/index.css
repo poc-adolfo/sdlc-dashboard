@@ -200,46 +200,32 @@ textarea {
   font-size: 0.85rem;
 }
 
-/* PR #30 added the dropdown + "Novo" inline-create form but shipped without any styling for it - the
-   fields rendered as unstyled, unlaid-out browser defaults stacked on top of each other. */
-.workspace-new-form {
+/* WorkspacePage's create-or-edit form (seção 4/5.1/8 consolidation) - same field set the header's old
+   inline "Novo" popover used, now living as the top section of the unified Workspace screen instead. */
+.workspace-details-form {
   display: flex;
   flex-direction: column;
-  gap: 0.4rem;
-  width: 100%;
-  flex-basis: 100%;
-  margin-top: 0.5rem;
-  padding: 0.75rem;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--bg);
+  gap: 0.5rem;
+  max-width: 26rem;
 }
 
-.workspace-new-form label {
+.workspace-details-form label {
   font-size: 0.78rem;
   color: var(--text-muted);
 }
 
-.workspace-new-form input,
-.workspace-new-form select {
-  padding: 0.5rem 0.65rem;
+.workspace-details-form input,
+.workspace-details-form select {
+  padding: 0.55rem 0.7rem;
   border: 1px solid var(--border);
   border-radius: 6px;
-  background: var(--surface);
+  background: var(--bg);
   color: var(--text);
 }
 
-.workspace-new-form-actions {
-  display: flex;
-  gap: 0.5rem;
+.workspace-details-form button {
   margin-top: 0.25rem;
-}
-
-.workspace-new-form-actions button:first-child {
-  border: none;
-  background: var(--accent);
-  color: var(--accent-contrast);
-  font-weight: 600;
+  align-self: flex-start;
 }
 
 .app-content {
@@ -536,32 +522,6 @@ section input[type='text'],
   color: var(--text-muted);
 }
 
-.credential-form {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-  margin-bottom: 1.5rem;
-  max-width: 26rem;
-}
-
-.credential-form select,
-.credential-form input {
-  padding: 0.6rem 0.75rem;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--bg);
-  color: var(--text);
-}
-
-.credential-form button {
-  margin-top: 0.5rem;
-  padding: 0.7rem;
-  border: none;
-  background: var(--accent);
-  color: var(--accent-contrast);
-  font-weight: 600;
-}
-
 .credential-list {
   list-style: none;
   margin: 0.75rem 0 0;
@@ -591,6 +551,13 @@ section input[type='text'],
   border-left-color: var(--danger);
 }
 
+.credential-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
 .credential-perfil {
   margin: 0;
   font-weight: 600;
@@ -600,4 +567,34 @@ section input[type='text'],
   margin: 0.15rem 0;
   font-size: 0.85rem;
   color: var(--text-muted);
+}
+
+/* Inline cadastrar/rotacionar form for a single row - opens in place instead of a page-level form with
+   a perfil dropdown, so which perfil is being edited is never ambiguous. */
+.credential-inline-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin-top: 0.75rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--border);
+}
+
+.credential-inline-form label {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+
+.credential-inline-form input {
+  padding: 0.5rem 0.65rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.credential-inline-form-actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.25rem;
 }

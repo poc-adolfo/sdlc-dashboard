@@ -42,7 +42,7 @@ export function SpecsPage() {
 
   // Revisor finding on PR #24: switching workspaceId starts a new request, but a slower response for
   // the *previous* workspace can still land after it and overwrite specs/loadError with the wrong
-  // workspace's data (same class of race QA found in AssessmentPage's client search). Bumped on every
+  // workspace's data (same class of race QA found in WorkspacePage's client search). Bumped on every
   // load this triggers so a response can tell whether it's still the latest.
   const loadSeq = useRef(0);
 
@@ -66,7 +66,7 @@ export function SpecsPage() {
 
   // seção 5.2: this workspace's own listing - a workspace switch elsewhere in the app (Layout's
   // picker) must not leave a stale listing/outcomes from the previous one on screen (QA finding on
-  // PR #22, same class of bug in AssessmentPage).
+  // PR #22, same class of bug in WorkspacePage).
   useEffect(() => {
     setSpecs(null);
     setOutcomes({});
