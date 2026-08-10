@@ -13,7 +13,7 @@ export function LoginPage() {
   const [submitting, setSubmitting] = useState(false);
 
   if (status === 'authenticated') {
-    const from = (location.state as { from?: Location })?.from?.pathname ?? '/assessment';
+    const from = (location.state as { from?: Location })?.from?.pathname ?? '/workspace';
     return <Navigate to={from} replace />;
   }
 
@@ -23,7 +23,7 @@ export function LoginPage() {
     setSubmitting(true);
     try {
       await login(username, password);
-      navigate('/assessment', { replace: true });
+      navigate('/workspace', { replace: true });
     } catch (err) {
       // 401 = credenciais inválidas (seção 14); anything else is an unexpected failure.
       setError(err instanceof ApiError && err.status === 401 ? 'Usuário ou senha inválidos.' : 'Falha ao entrar. Tente novamente.');
