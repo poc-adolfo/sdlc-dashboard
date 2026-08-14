@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using Backend.Api.Services;
 using Backend.Persistence.Data;
 using Backend.Persistence.Domain;
 using Microsoft.EntityFrameworkCore;
@@ -14,6 +15,7 @@ public static class AssessmentEndpoints
     public static IEndpointRouteBuilder MapAssessmentEndpoints(this IEndpointRouteBuilder endpoints)
     {
         endpoints.MapGet("/clients", SearchClients);
+        endpoints.MapGet("/workspaces/{id:long}/assessments/current", GetCurrent);
         endpoints.MapGet("/workspaces/{id:long}/assessments/{aid:long}", Get);
         endpoints.MapPost("/workspaces/{id:long}/assessments", Upsert);
         endpoints.MapPost("/workspaces/{id:long}/assessments/{aid:long}/concluir", Conclude);
@@ -22,8 +24,20 @@ public static class AssessmentEndpoints
 
     private static async Task<IResult> Get(long id, long aid, AppDbContext db, CancellationToken ct)
     {
-        var assessment = await db.Assessments.AsNoTracking().SingleOrDefaultAsync(a => a.Id == aid, ct);
+        var assessment = await db.Assessments.AsNoTracking().Include(a => a.Client).SingleOrDefaultAsync(a => a.Id == aid, ct);
         return assessment is null || assessment.WorkspaceId != id ? Results.NotFound() : Results.Ok(AssessmentResponse.From(assessment));
+    }
+
+    // Lets WorkspacePage restore the in-progress assessment (client + draft content) after a reload or
+    // a return visit, instead of always dropping back to the empty ClientPicker even though the content
+    // was already saved - the assessment_id needed for GET .../{aid} isn't known to the frontend until
+    // then, so it has nowhere else to get it from.
+    private static async Task<IResult> GetCurrent(long id, AppDbContext db, CancellationToken ct)
+    {
+        if (!await db.Workspaces.AnyAsync(w => w.Id == id, ct)) return Results.NotFound();
+        var assessment = await db.Assessments.AsNoTracking().Include(a => a.Client)
+            .SingleOrDefaultAsync(a => a.WorkspaceId == id && a.Status == AssessmentStatus.EmAndamento, ct);
+        return assessment is null ? Results.NotFound() : Results.Ok(AssessmentResponse.From(assessment));
     }
 
     private static async Task<IResult> SearchClients(string? q, AppDbContext db, CancellationToken ct)
@@ -34,7 +48,7 @@ public static class AssessmentEndpoints
         return Results.Ok(clients);
     }
 
-    private static async Task<IResult> Upsert(long id, AssessmentRequest? request, AppDbContext db, IConfiguration configuration, CancellationToken ct)
+    private static async Task<IResult> Upsert(long id, AssessmentRequest? request, AppDbContext db, IConfiguration configuration, IBlobStore blobs, ILoggerFactory loggerFactory, CancellationToken ct)
     {
         if (request is null || request.ClientId is null && string.IsNullOrWhiteSpace(request.ClientName))
             return Results.UnprocessableEntity(new { errors = new[] { "client_id or client_name is required" } });
@@ -71,6 +85,20 @@ public static class AssessmentEndpoints
         if (assessment is null) { assessment = new Assessment { WorkspaceId = id, Client = client, ClientId = client.Id, Content = content, CreatedAt = now, UpdatedAt = now }; db.Assessments.Add(assessment); }
         else { assessment.Client = client; assessment.ClientId = client.Id; if (request.Content is not null) assessment.Content = request.Content; assessment.UpdatedAt = now; }
         await db.SaveChangesAsync(ct);
+
+        // Best-effort: the database row is the system of record (see AssessmentResponse below), this is
+        // a supplementary export. A blob store outage must not turn a successful save into a 502 -
+        // Salvar already worked from the operator's point of view by the time SaveChangesAsync returned.
+        try
+        {
+            await blobs.WriteAsync($"assessments/{workspace.Slug}/{assessment.Id}.md", assessment.Content, ct);
+        }
+        catch (Exception ex) when (ex is not (OutOfMemoryException or StackOverflowException))
+        {
+            loggerFactory.CreateLogger("AssessmentEndpoints").LogWarning(ex,
+                "Failed to write markdown export for assessment {AssessmentId} (workspace {WorkspaceId})", assessment.Id, id);
+        }
+
         return Results.Ok(AssessmentResponse.From(assessment));
     }
 
@@ -93,7 +121,7 @@ public static class AssessmentEndpoints
 
 public sealed record AssessmentRequest([property: JsonPropertyName("assessment_id")] long? AssessmentId = null, [property: JsonPropertyName("client_id")] long? ClientId = null, [property: JsonPropertyName("client_name")] string? ClientName = null, [property: JsonPropertyName("content")] string? Content = null);
 public sealed record ClientResponse(long Id, string Name);
-public sealed record AssessmentResponse(long Id, long WorkspaceId, long ClientId, string Content, string Status, DateTime CreatedAt, DateTime UpdatedAt)
+public sealed record AssessmentResponse(long Id, long WorkspaceId, long ClientId, string ClientName, string Content, string Status, DateTime CreatedAt, DateTime UpdatedAt)
 {
-    public static AssessmentResponse From(Assessment a) => new(a.Id, a.WorkspaceId, a.ClientId, a.Content, a.Status == AssessmentStatus.Concluido ? "concluido" : "em_andamento", a.CreatedAt, a.UpdatedAt);
+    public static AssessmentResponse From(Assessment a) => new(a.Id, a.WorkspaceId, a.ClientId, a.Client?.Name ?? string.Empty, a.Content, a.Status == AssessmentStatus.Concluido ? "concluido" : "em_andamento", a.CreatedAt, a.UpdatedAt);
 }

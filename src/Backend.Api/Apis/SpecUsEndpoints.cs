@@ -62,7 +62,7 @@ public static class SpecUsEndpoints
         return Results.Json(new { pipeline_instance = new PipelineInstanceResponse(pipeline.Id, pipeline.WorkspaceId, pipeline.SpecId, pipeline.FaseAtual.ToString(), pipeline.GateStatus.ToString(), pipeline.ExternalRef, pipeline.PrRef, pipeline.CreatedAt) }, statusCode: 201);
     }
 
-    private static async Task<string?> Publish(Workspace workspace, string title, string body, PlatformContentClient platform, CancellationToken ct)
+    internal static async Task<string?> Publish(Workspace workspace, string title, string body, PlatformContentClient platform, CancellationToken ct)
     {
         try
         {

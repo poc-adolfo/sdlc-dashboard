@@ -1,6 +1,13 @@
+import { useState } from 'react';
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
 import { useWorkspace, useWorkspaceList, WorkspaceListProvider } from '../workspace/WorkspaceContext';
+
+// Lets a page (SpecsPage, seção 5.2/5.4) collapse the main nav itself when it wants more room - passed
+// down through <Outlet context>, consumed via useOutletContext(), so Layout doesn't need to know why.
+export interface LayoutContext {
+  setNavOpen: (open: boolean) => void;
+}
 
 const NAV_ITEMS = [
   { to: '/workspace', label: 'Workspace' },
@@ -49,10 +56,13 @@ function WorkspacePicker() {
 // top tab strip instead (index.css, .app-shell grid areas), same markup either way.
 export function Layout() {
   const { logout } = useAuth();
+  // Collapse only matters at the desktop breakpoint (left sidebar) - the mobile bottom tabbar always
+  // shows its tabs regardless of this state, since there's nowhere for a toggle to usefully live there.
+  const [navOpen, setNavOpen] = useState(true);
 
   return (
     <WorkspaceListProvider>
-      <div className="app-shell">
+      <div className={`app-shell${navOpen ? '' : ' app-shell--nav-collapsed'}`}>
         <header className="app-header">
           <span className="app-title">sdlc-dashboard</span>
           <WorkspacePicker />
@@ -62,19 +72,29 @@ export function Layout() {
         </header>
 
         <main className="app-content">
-          <Outlet />
+          <Outlet context={{ setNavOpen } satisfies LayoutContext} />
         </main>
 
-        <nav className="app-tabbar" aria-label="Navegação principal">
-          {NAV_ITEMS.map((item) => (
-            <NavLink
-              key={item.to}
-              to={item.to}
-              className={({ isActive }) => `app-tab${isActive ? ' app-tab--active' : ''}`}
-            >
-              {item.label}
-            </NavLink>
-          ))}
+        <nav className={`app-tabbar${navOpen ? '' : ' app-tabbar--collapsed'}`} aria-label="Navegação principal">
+          <button
+            type="button"
+            className="app-tabbar-toggle"
+            onClick={() => setNavOpen((open) => !open)}
+            aria-label={navOpen ? 'Recolher navegação' : 'Expandir navegação'}
+            aria-expanded={navOpen}
+          >
+            {navOpen ? '‹' : '›'}
+          </button>
+          {navOpen &&
+            NAV_ITEMS.map((item) => (
+              <NavLink
+                key={item.to}
+                to={item.to}
+                className={({ isActive }) => `app-tab${isActive ? ' app-tab--active' : ''}`}
+              >
+                {item.label}
+              </NavLink>
+            ))}
         </nav>
       </div>
     </WorkspaceListProvider>

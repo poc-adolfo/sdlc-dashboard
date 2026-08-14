@@ -1,7 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { MemoryRouter, Outlet, Route, Routes } from 'react-router-dom';
 import { WorkspaceProvider, useWorkspace } from '../workspace/WorkspaceContext';
+import type { LayoutContext } from '../components/Layout';
 import { SpecsPage } from './SpecsPage';
 
 function jsonResponse(status: number, body: unknown) {
@@ -12,11 +14,25 @@ function textResponse(status: number, body: string) {
   return new Response(body, { status, headers: { 'Content-Type': 'text/markdown; charset=utf-8' } });
 }
 
+// Stands in for Layout's <Outlet context={{ setNavOpen }}> - SpecsPage reads this via useOutletContext()
+// to collapse the main nav itself when a spec is selected (seção 5.2/5.4).
+const setNavOpenSpy = vi.fn();
+
+function TestLayout() {
+  return <Outlet context={{ setNavOpen: setNavOpenSpy } satisfies LayoutContext} />;
+}
+
 function renderPage() {
   return render(
-    <WorkspaceProvider>
-      <SpecsPage />
-    </WorkspaceProvider>,
+    <MemoryRouter initialEntries={['/specs']}>
+      <WorkspaceProvider>
+        <Routes>
+          <Route element={<TestLayout />}>
+            <Route path="/specs" element={<SpecsPage />} />
+          </Route>
+        </Routes>
+      </WorkspaceProvider>
+    </MemoryRouter>,
   );
 }
 
@@ -32,10 +48,16 @@ function WorkspaceSwitcher({ to }: { to: number }) {
 const SPEC_CONTENT = '# Checkout\n\n> Status: rascunho (2026-08-05).\n\nConteudo.\n';
 const SPEC_ITEM = { fileName: 'checkout.md', title: 'Checkout', status: 'rascunho', version: 1, updatedAt: '2026-08-05T00:00:00Z' };
 
-async function openProjectAndSpec(fetchMock: ReturnType<typeof vi.fn>) {
+async function openSpecChat(fetchMock: ReturnType<typeof vi.fn>) {
   renderPage();
-  await userEvent.click(await screen.findByRole('button', { name: 'Abrir' }));
-  await userEvent.click(await screen.findByRole('button', { name: 'Abrir' }));
+  await userEvent.click(await screen.findByRole('button', { name: (n) => n.startsWith('checkout.md') }));
+  await screen.findByRole('heading', { name: 'O que vamos especificar hoje?' });
+  return fetchMock;
+}
+
+async function openSpecModal(fetchMock: ReturnType<typeof vi.fn>) {
+  renderPage();
+  await userEvent.click(await screen.findByRole('button', { name: 'Visualizar checkout.md' }));
   await screen.findByLabelText('Conteúdo');
   return fetchMock;
 }
@@ -44,6 +66,7 @@ describe('SpecsPage', () => {
   beforeEach(() => {
     localStorage.clear();
     localStorage.setItem('sdlc-dashboard:workspaceId', '7');
+    setNavOpenSpy.mockClear();
   });
 
   it('prompts to pick a workspace when none is selected', () => {
@@ -61,7 +84,7 @@ describe('SpecsPage', () => {
     expect(await screen.findByText('Conclua o assessment deste workspace antes de acessar as specs (seção "Workspace").')).toBeInTheDocument();
   });
 
-  it('lists projects for the workspace and lets the operator open one', async () => {
+  it('renders the tree (projeto -> specs -> *.md) with specs loaded eagerly for every project', async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = typeof input === 'string' ? input : input.toString();
       if (url === '/workspaces/7') return jsonResponse(200, { clientId: 1 });
@@ -72,15 +95,13 @@ describe('SpecsPage', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     renderPage();
+
     expect(await screen.findByText('checkout')).toBeInTheDocument();
-
-    await userEvent.click(screen.getByRole('button', { name: 'Abrir' }));
-
-    expect(await screen.findByText('Checkout')).toBeInTheDocument();
-    expect(screen.getByText('checkout.md · rascunho')).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: (n) => n.startsWith('checkout.md') })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Visualizar checkout.md' })).toBeInTheDocument();
   });
 
-  it('creates a new project and opens it', async () => {
+  it('creates a new project via the "+" button next to the Specs title', async () => {
     let created = false;
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === 'string' ? input : input.toString();
@@ -100,39 +121,48 @@ describe('SpecsPage', () => {
     renderPage();
     await screen.findByText('Nenhum projeto ainda.');
 
-    await userEvent.click(screen.getByRole('button', { name: 'Novo projeto' }));
+    // Two "Novo projeto" triggers are visible when the tree is empty: the header "+" (first in the DOM)
+    // and the empty-state's own CTA - this test targets the header one.
+    const [headerButton] = screen.getAllByRole('button', { name: 'Novo projeto' });
+    await userEvent.click(headerButton);
     await userEvent.type(screen.getByLabelText('Nome do projeto'), 'onboarding');
     await userEvent.click(screen.getByRole('button', { name: 'Criar' }));
 
-    expect(await screen.findByText('Nenhuma spec neste projeto ainda.')).toBeInTheDocument();
+    expect(await screen.findByText('onboarding')).toBeInTheDocument();
+    expect(await screen.findByText('Nenhuma spec ainda.')).toBeInTheDocument();
   });
 
-  it('creates a new spec with a default template and opens the editor', async () => {
+  it('creates a new spec with a default template and selects it for chat', async () => {
+    let created = false;
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === 'string' ? input : input.toString();
       if (url === '/workspaces/7') return jsonResponse(200, { clientId: 1 });
       if (url === '/workspaces/7/spec-projects') return jsonResponse(200, ['checkout']);
-      if (url === '/workspaces/7/spec-projects/checkout/specs' && (!init || init.method === undefined)) return jsonResponse(200, []);
+      if (url === '/workspaces/7/spec-projects/checkout/specs' && (!init || init.method === undefined)) {
+        return jsonResponse(200, created ? [{ fileName: 'nova.md', title: 'nova', status: 'rascunho', version: 1, updatedAt: null }] : []);
+      }
       if (url === '/workspaces/7/spec-projects/checkout/specs/nova.md' && init?.method === 'PUT') {
         const body = JSON.parse(init.body as string);
         expect(body.content).toContain('# nova');
         expect(body.content).toContain('> Status: rascunho');
+        created = true;
         return jsonResponse(200, { saved: true });
       }
-      if (url === '/workspaces/7/spec-projects/checkout/specs/nova.md') return textResponse(200, '# nova\n\n> Status: rascunho (2026-08-09).\n');
       throw new Error(`unexpected request: ${url}`);
     });
     vi.stubGlobal('fetch', fetchMock);
 
     renderPage();
-    await userEvent.click(await screen.findByRole('button', { name: 'Abrir' }));
-    await screen.findByText('Nenhuma spec neste projeto ainda.');
+    await screen.findByText('Nenhuma spec ainda.');
 
-    await userEvent.click(screen.getByRole('button', { name: 'Nova spec' }));
+    await userEvent.click(screen.getByRole('button', { name: '+ Nova spec' }));
     await userEvent.type(screen.getByLabelText('Nome da spec'), 'nova');
     await userEvent.click(screen.getByRole('button', { name: 'Criar' }));
 
-    expect(await screen.findByLabelText('Conteúdo')).toHaveValue('# nova\n\n> Status: rascunho (2026-08-09).\n');
+    // Selecting the new spec for chat also collapses the sidebar (seção 5.4), so the tree (and its
+    // "Visualizar nova.md" button) is no longer on screen to check directly.
+    expect(await screen.findByRole('heading', { name: 'O que vamos especificar hoje?' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Visualizar nova.md' })).not.toBeInTheDocument();
   });
 
   function withEditorHandlers(extra: (url: string, init?: RequestInit) => Response | Promise<Response> | undefined) {
@@ -148,7 +178,7 @@ describe('SpecsPage', () => {
     });
   }
 
-  it('loads the spec content into the editor and saves edits via PUT', async () => {
+  it('"ver" opens a modal with the spec content, and saves edits via PUT', async () => {
     const fetchMock = withEditorHandlers((url, init) => {
       if (url === '/workspaces/7/spec-projects/checkout/specs/checkout.md' && init?.method === 'PUT') {
         const body = JSON.parse(init.body as string);
@@ -159,15 +189,37 @@ describe('SpecsPage', () => {
     });
     vi.stubGlobal('fetch', fetchMock);
 
-    await openProjectAndSpec(fetchMock);
+    await openSpecModal(fetchMock);
     const textarea = screen.getByLabelText('Conteúdo');
     expect(textarea).toHaveValue(SPEC_CONTENT);
+    expect(textarea).toBeVisible(); // inside the modal, not a collapsed accordion
 
     await userEvent.clear(textarea);
     await userEvent.type(textarea, 'texto editado');
     await userEvent.click(screen.getByRole('button', { name: 'Salvar' }));
 
     expect(await screen.findByText('Spec salva.')).toBeInTheDocument();
+  });
+
+  it('closes the view modal via the × button', async () => {
+    const fetchMock = withEditorHandlers(() => undefined);
+    vi.stubGlobal('fetch', fetchMock);
+
+    await openSpecModal(fetchMock);
+    await userEvent.click(screen.getByRole('button', { name: 'Fechar' }));
+
+    expect(screen.queryByLabelText('Conteúdo')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Visualizar checkout.md' })).toBeInTheDocument();
+  });
+
+  it('closes the view modal on Escape', async () => {
+    const fetchMock = withEditorHandlers(() => undefined);
+    vi.stubGlobal('fetch', fetchMock);
+
+    await openSpecModal(fetchMock);
+    await userEvent.keyboard('{Escape}');
+
+    expect(screen.queryByLabelText('Conteúdo')).not.toBeInTheDocument();
   });
 
   it('publishes via Subir US and shows the created reference', async () => {
@@ -179,7 +231,7 @@ describe('SpecsPage', () => {
     });
     vi.stubGlobal('fetch', fetchMock);
 
-    await openProjectAndSpec(fetchMock);
+    await openSpecModal(fetchMock);
     await userEvent.click(screen.getByRole('button', { name: 'Subir US' }));
 
     expect(await screen.findByText('US criada: #42')).toBeInTheDocument();
@@ -195,14 +247,14 @@ describe('SpecsPage', () => {
     });
     vi.stubGlobal('fetch', fetchMock);
 
-    await openProjectAndSpec(fetchMock);
+    await openSpecModal(fetchMock);
     await userEvent.click(screen.getByRole('button', { name: 'Subir US' }));
 
     expect(await screen.findByText('falta WBS')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Subir US' })).not.toBeDisabled();
   });
 
-  it('sends a chat message to the specs skill and appends the reply', async () => {
+  it('shows the chat prompt "O que vamos especificar hoje?" and sends a message on Enter (no Shift)', async () => {
     const fetchMock = withEditorHandlers((url, init) => {
       if (url === '/workspaces/7/spec-projects/checkout/specs/checkout.md/chat' && init?.method === 'POST') {
         const body = JSON.parse(init.body as string);
@@ -213,12 +265,24 @@ describe('SpecsPage', () => {
     });
     vi.stubGlobal('fetch', fetchMock);
 
-    await openProjectAndSpec(fetchMock);
-    await userEvent.type(screen.getByLabelText('Mensagem'), 'Sugira riscos.');
-    await userEvent.click(screen.getByRole('button', { name: 'Enviar' }));
+    await openSpecChat(fetchMock);
+
+    await userEvent.type(screen.getByLabelText('Mensagem'), 'Sugira riscos.{Enter}');
 
     expect(await screen.findByText('Aqui vai uma sugestão de riscos.')).toBeInTheDocument();
     expect(screen.getByText('Sugira riscos.')).toBeInTheDocument();
+  });
+
+  it('Shift+Enter inserts a newline instead of sending', async () => {
+    const fetchMock = withEditorHandlers(() => undefined);
+    vi.stubGlobal('fetch', fetchMock);
+
+    await openSpecChat(fetchMock);
+    const input = screen.getByLabelText('Mensagem');
+    await userEvent.type(input, 'linha 1{Shift>}{Enter}{/Shift}linha 2');
+
+    expect(input).toHaveValue('linha 1\nlinha 2');
+    expect(screen.queryByText('linha 1')).not.toBeInTheDocument(); // not sent - still just draft text
   });
 
   it('shows a retry error when the chat call fails, without losing the typed message from history', async () => {
@@ -230,7 +294,7 @@ describe('SpecsPage', () => {
     });
     vi.stubGlobal('fetch', fetchMock);
 
-    await openProjectAndSpec(fetchMock);
+    await openSpecChat(fetchMock);
     await userEvent.type(screen.getByLabelText('Mensagem'), 'oi');
     await userEvent.click(screen.getByRole('button', { name: 'Enviar' }));
 
@@ -238,26 +302,36 @@ describe('SpecsPage', () => {
     expect(screen.getByText('oi')).toBeInTheDocument();
   });
 
-  it('"trocar projeto" and "trocar spec" navigate back up the hierarchy', async () => {
-    const fetchMock = withEditorHandlers(() => undefined);
-    vi.stubGlobal('fetch', fetchMock);
-
-    await openProjectAndSpec(fetchMock);
-    await userEvent.click(screen.getByRole('button', { name: 'trocar spec' }));
-
-    expect(await screen.findByRole('button', { name: 'Nova spec' })).toBeInTheDocument();
-    expect(screen.queryByLabelText('Conteúdo')).not.toBeInTheDocument();
-
-    await userEvent.click(screen.getByRole('button', { name: 'trocar projeto' }));
-
-    expect(await screen.findByRole('heading', { name: 'Projeto' })).toBeInTheDocument();
-  });
-
-  it('resets the whole hierarchy when the workspace changes elsewhere in the app', async () => {
+  it('collapses and expands the specs sidebar', async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = typeof input === 'string' ? input : input.toString();
       if (url === '/workspaces/7') return jsonResponse(200, { clientId: 1 });
       if (url === '/workspaces/7/spec-projects') return jsonResponse(200, ['checkout']);
+      if (url === '/workspaces/7/spec-projects/checkout/specs') return jsonResponse(200, [SPEC_ITEM]);
+      throw new Error(`unexpected request: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderPage();
+    await screen.findByRole('button', { name: (n) => n.startsWith('checkout.md') });
+    expect(screen.getByRole('heading', { name: 'Specs' })).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Recolher lista de specs' }));
+
+    expect(screen.queryByRole('heading', { name: 'Specs' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: (n) => n.startsWith('checkout.md') })).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Expandir lista de specs' }));
+
+    expect(await screen.findByRole('button', { name: (n) => n.startsWith('checkout.md') })).toBeInTheDocument();
+  });
+
+  it('resets the tree and clears the chat selection when the workspace changes elsewhere in the app', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url === '/workspaces/7') return jsonResponse(200, { clientId: 1 });
+      if (url === '/workspaces/7/spec-projects') return jsonResponse(200, ['checkout']);
+      if (url === '/workspaces/7/spec-projects/checkout/specs') return jsonResponse(200, [SPEC_ITEM]);
       if (url === '/workspaces/8') return jsonResponse(200, { clientId: 2 });
       if (url === '/workspaces/8/spec-projects') return jsonResponse(200, []);
       throw new Error(`unexpected request: ${url}`);
@@ -265,15 +339,30 @@ describe('SpecsPage', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     render(
-      <WorkspaceProvider>
-        <WorkspaceSwitcher to={8} />
-        <SpecsPage />
-      </WorkspaceProvider>,
+      <MemoryRouter initialEntries={['/specs']}>
+        <WorkspaceProvider>
+          <WorkspaceSwitcher to={8} />
+          <Routes>
+            <Route element={<TestLayout />}>
+              <Route path="/specs" element={<SpecsPage />} />
+            </Route>
+          </Routes>
+        </WorkspaceProvider>
+      </MemoryRouter>,
     );
-    await userEvent.click(await screen.findByRole('button', { name: 'Abrir' }));
+    await userEvent.click(await screen.findByRole('button', { name: (n) => n.startsWith('checkout.md') }));
+    await screen.findByRole('heading', { name: 'O que vamos especificar hoje?' });
+    // Selecting a spec collapses the sidebar (seção 5.4) - this switch happens while it's collapsed.
+    expect(setNavOpenSpy).toHaveBeenCalledWith(false);
 
     await userEvent.click(screen.getByRole('button', { name: 'Switch workspace' }));
 
+    expect(await screen.findByText('Selecione uma spec ao lado para começar.')).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'O que vamos especificar hoje?' })).not.toBeInTheDocument();
+
+    // Expand the sidebar back to confirm the tree itself was reset to workspace 8's (empty) data, not
+    // just the chat selection.
+    await userEvent.click(screen.getByRole('button', { name: 'Expandir lista de specs' }));
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/workspaces/8/spec-projects', expect.anything()));
     expect(await screen.findByText('Nenhum projeto ainda.')).toBeInTheDocument();
   });

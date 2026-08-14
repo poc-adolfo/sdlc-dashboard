@@ -19,6 +19,7 @@ public sealed class AssessmentApiFactory : WebApplicationFactory<Program>
 {
     private readonly string path = Path.Combine(Path.GetTempPath(), $"assessment-{Guid.NewGuid():N}.db");
     public FakeAnalistaHandler Handler { get; } = new();
+    public FakeBlobStore Blobs { get; } = new();
     public string ApiKey { get; } = "test-token";
     public string TestPassword { get; } = Guid.NewGuid().ToString("N");
     public string TestSigningKey { get; } = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
@@ -29,9 +30,41 @@ public sealed class AssessmentApiFactory : WebApplicationFactory<Program>
             ["ConnectionStrings:Default"]=$"Data Source={path}", ["Analista:ApiServerBaseUrl"]="https://analista.test",
             ["Analista:AllowedHost"]="analista.test",
             ["Analista:ApiServerApiKey"] = ApiKey, ["Analista:TimeoutSeconds"] = "1" }))
-        .ConfigureServices(s => s.AddHttpClient("Analista").ConfigurePrimaryHttpMessageHandler(() => Handler));
+        .ConfigureServices(s =>
+        {
+            s.AddHttpClient("Analista").ConfigurePrimaryHttpMessageHandler(() => Handler);
+            s.AddSingleton<Backend.Api.Services.IBlobStore>(Blobs);
+        });
     protected override void ConfigureClient(HttpClient client) => client.DefaultRequestHeaders.Add("Cookie", "sdlc_session=" + Services.GetRequiredService<SessionService>().Create("operator", DateTimeOffset.UtcNow));
     protected override void Dispose(bool disposing) { base.Dispose(disposing); Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools(); foreach(var x in new[]{path,path+"-wal",path+"-shm"}) try { if(File.Exists(x)) File.Delete(x); } catch (IOException) { } }
+}
+public sealed class FakeBlobStore : Backend.Api.Services.IBlobStore
+{
+    public System.Collections.Concurrent.ConcurrentBag<(string Path, string Content)> Written { get; } = new();
+    public bool ShouldFail { get; set; }
+    public Task WriteAsync(string path, string content, CancellationToken ct)
+    {
+        if (ShouldFail) throw new InvalidOperationException("blob store unavailable");
+        Written.Add((path, content));
+        return Task.CompletedTask;
+    }
+
+    public Task<string?> ReadAsync(string path, CancellationToken ct)
+    {
+        var match = Written.LastOrDefault(w => w.Path == path);
+        return Task.FromResult(match.Path is null ? null : match.Content);
+    }
+
+    public Task<IReadOnlyList<Backend.Api.Services.BlobEntry>> ListAsync(string prefix, CancellationToken ct)
+    {
+        IReadOnlyList<Backend.Api.Services.BlobEntry> entries = Written
+            .Select(w => w.Path)
+            .Distinct()
+            .Where(p => p.StartsWith(prefix, StringComparison.Ordinal))
+            .Select(p => new Backend.Api.Services.BlobEntry(p, DateTimeOffset.UtcNow))
+            .ToList();
+        return Task.FromResult(entries);
+    }
 }
 public sealed class FakeAnalistaHandler : HttpMessageHandler
 {
@@ -103,8 +136,58 @@ public sealed class AssessmentTests
         using var factory = new ProductionHttpAnalistaFactory();
         Assert.ThrowsAny<Exception>(() => factory.CreateClient());
     }
+
+    [Fact]
+    public async Task CurrentReturnsTheInProgressAssessmentWithClientName()
+    {
+        using var f = New(); var (c, w, a) = await Seed(f, "Current");
+        var current = await c.GetFromJsonAsync<AssessmentResponse>($"/workspaces/{w}/assessments/current");
+        Assert.Equal(a, current!.Id); Assert.Equal("Current", current.ClientName); Assert.Equal("em_andamento", current.Status);
+    }
+
+    [Fact]
+    public async Task CurrentReturns404WhenNoAssessmentInProgress()
+    {
+        using var f = New(); var c = f.CreateClient();
+        var w = await (await c.PostAsJsonAsync("/workspaces", new { name = "NoAssessment", platform = "github", platform_ref = Guid.NewGuid().ToString() })).Content.ReadFromJsonAsync<Workspace>();
+        Assert.Equal(HttpStatusCode.NotFound, (await c.GetAsync($"/workspaces/{w!.Id}/assessments/current")).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await c.GetAsync("/workspaces/99999/assessments/current")).StatusCode);
+    }
+
+    [Fact]
+    public async Task CurrentReturns404OnceConcluded()
+    {
+        using var f = New(); var (c, w, a) = await Seed(f, "Concludes");
+        await c.PostAsync($"/workspaces/{w}/assessments/{a}/concluir", null);
+        Assert.Equal(HttpStatusCode.NotFound, (await c.GetAsync($"/workspaces/{w}/assessments/current")).StatusCode);
+    }
+
+    [Fact]
+    public async Task UpsertWritesTheContentToTheBlobStore()
+    {
+        using var f = New(); var (c, w, a) = await Seed(f, "Blobbed");
+        Assert.Single(f.Blobs.Written);
+        var (writtenPath, writtenContent) = f.Blobs.Written.Single();
+        Assert.Equal($"assessments/blobbed/{a}.md", writtenPath);
+        Assert.Equal("x", writtenContent);
+
+        await c.PostAsJsonAsync($"/workspaces/{w}/assessments", new { assessment_id = a, client_name = "Blobbed", content = "updated" });
+        Assert.Equal(2, f.Blobs.Written.Count);
+        Assert.Contains(f.Blobs.Written, e => e.Content == "updated");
+    }
+
+    [Fact]
+    public async Task UpsertStillSucceedsWhenTheBlobStoreIsUnavailable()
+    {
+        using var f = New(); f.Blobs.ShouldFail = true;
+        var c = f.CreateClient();
+        var w = await (await c.PostAsJsonAsync("/workspaces", new { name = "BlobDown", platform = "github", platform_ref = Guid.NewGuid().ToString() })).Content.ReadFromJsonAsync<Workspace>();
+        var response = await c.PostAsJsonAsync($"/workspaces/{w!.Id}/assessments", new { client_name = "BlobDown", content = "x" });
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Empty(f.Blobs.Written);
+    }
 }
-public sealed record Workspace(long Id); public sealed record Assessment(long Id,long ClientId,string Content); public sealed record AssessmentResponse(long Id,long WorkspaceId,long ClientId,string Content,string Status,DateTime CreatedAt,DateTime UpdatedAt); public sealed record WorkspaceResponse(long Id,string Name,string Slug,string Platform,string PlatformRef,long? ClientId,string Status,DateTime CreatedAt); public sealed record ClientResponse(long Id,string Name);
+public sealed record Workspace(long Id); public sealed record Assessment(long Id,long ClientId,string Content); public sealed record AssessmentResponse(long Id,long WorkspaceId,long ClientId,string ClientName,string Content,string Status,DateTime CreatedAt,DateTime UpdatedAt); public sealed record WorkspaceResponse(long Id,string Name,string Slug,string Platform,string PlatformRef,long? ClientId,string Status,DateTime CreatedAt); public sealed record ClientResponse(long Id,string Name);
 
 public sealed class ProductionHttpAnalistaFactory : WebApplicationFactory<Program>
 {

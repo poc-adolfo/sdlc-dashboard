@@ -1,6 +1,18 @@
-import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
+import {
+  forwardRef,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useRef,
+  useState,
+  type FormEvent,
+  type KeyboardEvent,
+  type ReactNode,
+} from 'react';
+import { useOutletContext } from 'react-router-dom';
 import { api, ApiError } from '../api/client';
 import { useWorkspace } from '../workspace/WorkspaceContext';
+import type { LayoutContext } from '../components/Layout';
 
 // seção 5.2 (atualização 2026-08-09): specs vivem em blob storage agora, não no repositório Git do
 // workspace - estrutura {client_id}/{projeto}/{nome_spec}. "projeto" não tem linha no banco, é só um
@@ -38,219 +50,278 @@ function defaultSpecTemplate(title: string): string {
   return `# ${title}\n\n> Status: rascunho (${today}).\n\n## User Story\n**Como** , **quero** , **para** \n\n## Criterios de aceite\n- [ ] \n\n## WBS - Plano de implementacao\n1. \n`;
 }
 
+// Ícone do botão "ver" (seção 5.2/5.4) - herda a cor do texto via currentColor, então segue o tema claro/
+// escuro automaticamente sem precisar de tokens próprios.
+function EyeIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7Z" />
+      <circle cx="12" cy="12" r="3" />
+    </svg>
+  );
+}
+
 // ---------------------------------------------------------------------------
-// Nível 1: projetos (prefixos no storage do client_id do workspace)
+// Treeview: projeto -> specs -> *.md - toda a hierarquia de uma vez (escala do piloto é pequena,
+// seção 15), em vez do navegador nível-a-nível de antes. Specs de cada projeto carregam em paralelo,
+// eager, assim que a lista de projetos chega.
 // ---------------------------------------------------------------------------
 
-function ProjectPicker({ workspaceId, onSelect }: { workspaceId: number; onSelect: (projeto: string) => void }) {
+interface ProjectNode {
+  status: 'loading' | 'success' | 'error';
+  specs?: SpecFileItem[];
+}
+
+export interface SpecTreeHandle {
+  openCreateProject: () => void;
+}
+
+const SpecTree = forwardRef<
+  SpecTreeHandle,
+  {
+    workspaceId: number;
+    selected: { projeto: string; fileName: string } | null;
+    onSelectSpec: (projeto: string, fileName: string) => void;
+    onViewSpec: (projeto: string, fileName: string) => void;
+  }
+>(function SpecTree({ workspaceId, selected, onSelectSpec, onViewSpec }, ref) {
   const [projects, setProjects] = useState<string[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [creating, setCreating] = useState(false);
-  const [name, setName] = useState('');
-  const [createError, setCreateError] = useState<string | null>(null);
-  const [submitting, setSubmitting] = useState(false);
+  const [nodes, setNodes] = useState<Record<string, ProjectNode>>({});
+  const [creatingProject, setCreatingProject] = useState(false);
+  const [projectName, setProjectName] = useState('');
+  const [projectCreateError, setProjectCreateError] = useState<string | null>(null);
+  const [projectSubmitting, setProjectSubmitting] = useState(false);
+  const [creatingSpecIn, setCreatingSpecIn] = useState<string | null>(null);
+  const [specName, setSpecName] = useState('');
+  const [specCreateError, setSpecCreateError] = useState<string | null>(null);
+  const [specSubmitting, setSpecSubmitting] = useState(false);
   const loadSeq = useRef(0);
 
-  const load = useCallback(async () => {
+  // "Novo projeto" agora fica no cabeçalho da barra lateral, alinhado ao título "Specs" - a árvore só
+  // expõe como abrir o próprio formulário, que continua vivendo aqui perto da lista.
+  useImperativeHandle(ref, () => ({
+    openCreateProject: () => setCreatingProject(true),
+  }));
+
+  const loadSpecsFor = useCallback(
+    async (projeto: string) => {
+      setNodes((prev) => ({ ...prev, [projeto]: { status: 'loading' } }));
+      try {
+        const data = await api.get<SpecFileItem[]>(`/workspaces/${workspaceId}/spec-projects/${encodeURIComponent(projeto)}/specs`);
+        setNodes((prev) => ({ ...prev, [projeto]: { status: 'success', specs: data } }));
+      } catch {
+        setNodes((prev) => ({ ...prev, [projeto]: { status: 'error' } }));
+      }
+    },
+    [workspaceId],
+  );
+
+  const loadProjects = useCallback(async () => {
     const seq = ++loadSeq.current;
     setLoadError(null);
     try {
       const data = await api.get<string[]>(`/workspaces/${workspaceId}/spec-projects`);
       if (seq !== loadSeq.current) return;
       setProjects(data);
+      data.forEach((projeto) => void loadSpecsFor(projeto));
     } catch {
       if (seq !== loadSeq.current) return;
       setProjects(null);
       setLoadError('Não foi possível carregar os projetos. Tente novamente.');
     }
-  }, [workspaceId]);
+  }, [workspaceId, loadSpecsFor]);
 
   useEffect(() => {
     setProjects(null);
-    load();
-  }, [load]);
+    setNodes({});
+    setCreatingProject(false);
+    setCreatingSpecIn(null);
+    loadProjects();
+  }, [loadProjects]);
 
-  async function handleCreate(event: FormEvent) {
+  async function handleCreateProject(event: FormEvent) {
     event.preventDefault();
-    setSubmitting(true);
-    setCreateError(null);
+    setProjectSubmitting(true);
+    setProjectCreateError(null);
     try {
-      await api.post(`/workspaces/${workspaceId}/spec-projects`, { name });
-      setCreating(false);
-      setName('');
-      await load();
-      onSelect(name);
+      await api.post(`/workspaces/${workspaceId}/spec-projects`, { name: projectName });
+      const created = projectName;
+      setCreatingProject(false);
+      setProjectName('');
+      await loadProjects();
+      await loadSpecsFor(created);
     } catch (error) {
-      setCreateError(error instanceof ApiError && error.status === 422 ? 'Nome inválido.' : 'Não foi possível criar o projeto. Tente novamente.');
+      setProjectCreateError(error instanceof ApiError && error.status === 422 ? 'Nome inválido.' : 'Não foi possível criar o projeto. Tente novamente.');
     } finally {
-      setSubmitting(false);
+      setProjectSubmitting(false);
     }
   }
 
-  return (
-    <div>
-      <h2>Projeto</h2>
-      {loadError && (
-        <div role="alert">
-          <p>{loadError}</p>
-          <button type="button" onClick={load}>
-            Tentar novamente
-          </button>
-        </div>
-      )}
-      {projects !== null && (
-        <>
-          {projects.length === 0 && <p>Nenhum projeto ainda.</p>}
-          <ul className="spec-list">
-            {projects.map((projeto) => (
-              <li key={projeto} className="spec-list-item">
-                <p className="spec-title">{projeto}</p>
-                <button type="button" className="btn-primary" onClick={() => onSelect(projeto)}>
-                  Abrir
-                </button>
-              </li>
-            ))}
-          </ul>
-        </>
-      )}
-
-      {!creating && (
-        <button type="button" onClick={() => setCreating(true)}>
-          Novo projeto
-        </button>
-      )}
-      {creating && (
-        <form onSubmit={handleCreate} className="workspace-details-form">
-          <label htmlFor="new-project-name">Nome do projeto</label>
-          <input id="new-project-name" value={name} onChange={(e) => setName(e.target.value)} disabled={submitting} required />
-          {createError && <p role="alert">{createError}</p>}
-          <div className="credential-inline-form-actions">
-            <button type="submit" className="btn-primary" disabled={submitting}>
-              {submitting ? 'Criando...' : 'Criar'}
-            </button>
-            <button type="button" onClick={() => { setCreating(false); setCreateError(null); }} disabled={submitting}>
-              Cancelar
-            </button>
-          </div>
-        </form>
-      )}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Nível 2: specs dentro de um projeto
-// ---------------------------------------------------------------------------
-
-function SpecFilePicker({
-  workspaceId,
-  projeto,
-  onSelect,
-  onTrocarProjeto,
-}: {
-  workspaceId: number;
-  projeto: string;
-  onSelect: (fileName: string) => void;
-  onTrocarProjeto: () => void;
-}) {
-  const [specs, setSpecs] = useState<SpecFileItem[] | null>(null);
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const [creating, setCreating] = useState(false);
-  const [fileName, setFileName] = useState('');
-  const [createError, setCreateError] = useState<string | null>(null);
-  const [submitting, setSubmitting] = useState(false);
-  const loadSeq = useRef(0);
-
-  const load = useCallback(async () => {
-    const seq = ++loadSeq.current;
-    setLoadError(null);
-    try {
-      const data = await api.get<SpecFileItem[]>(`/workspaces/${workspaceId}/spec-projects/${encodeURIComponent(projeto)}/specs`);
-      if (seq !== loadSeq.current) return;
-      setSpecs(data);
-    } catch {
-      if (seq !== loadSeq.current) return;
-      setSpecs(null);
-      setLoadError('Não foi possível carregar as specs. Tente novamente.');
-    }
-  }, [workspaceId, projeto]);
-
-  useEffect(() => {
-    setSpecs(null);
-    setCreating(false);
-    load();
-  }, [load]);
-
-  async function handleCreate(event: FormEvent) {
+  async function handleCreateSpec(event: FormEvent, projeto: string) {
     event.preventDefault();
-    const finalName = fileName.trim().endsWith('.md') ? fileName.trim() : `${fileName.trim()}.md`;
-    setSubmitting(true);
-    setCreateError(null);
+    const finalName = specName.trim().endsWith('.md') ? specName.trim() : `${specName.trim()}.md`;
+    setSpecSubmitting(true);
+    setSpecCreateError(null);
     try {
       await api.put(`/workspaces/${workspaceId}/spec-projects/${encodeURIComponent(projeto)}/specs/${encodeURIComponent(finalName)}`, {
-        content: defaultSpecTemplate(fileName.trim()),
+        content: defaultSpecTemplate(specName.trim()),
       });
-      setCreating(false);
-      setFileName('');
-      onSelect(finalName);
+      setCreatingSpecIn(null);
+      setSpecName('');
+      await loadSpecsFor(projeto);
+      onSelectSpec(projeto, finalName);
     } catch {
-      setCreateError('Não foi possível criar a spec. Tente novamente.');
+      setSpecCreateError('Não foi possível criar a spec. Tente novamente.');
     } finally {
-      setSubmitting(false);
+      setSpecSubmitting(false);
     }
   }
 
-  return (
-    <div>
-      <h2>
-        Specs em <strong>{projeto}</strong>{' '}
-        <button type="button" className="link-button" onClick={onTrocarProjeto}>
-          trocar projeto
+  if (loadError) {
+    return (
+      <div role="alert">
+        <p>{loadError}</p>
+        <button type="button" onClick={loadProjects}>
+          Tentar novamente
         </button>
-      </h2>
-      {loadError && (
-        <div role="alert">
-          <p>{loadError}</p>
-          <button type="button" onClick={load}>
-            Tentar novamente
+      </div>
+    );
+  }
+
+  if (projects === null) return <p role="status">Carregando...</p>;
+
+  return (
+    <div className="spec-tree">
+      {projects.length === 0 && !creatingProject && (
+        <div className="empty-state">
+          <p>Nenhum projeto ainda.</p>
+          <button type="button" className="btn-primary" onClick={() => setCreatingProject(true)}>
+            Novo projeto
           </button>
         </div>
       )}
-      {specs !== null && (
-        <>
-          {specs.length === 0 && <p>Nenhuma spec neste projeto ainda.</p>}
-          <ul className="spec-list">
-            {specs.map((spec) => (
-              <li key={spec.fileName} className="spec-list-item">
-                <p className="spec-title">{spec.title}</p>
-                <p className="spec-path">
-                  {spec.fileName}
-                  {spec.status ? ` · ${spec.status}` : ''}
-                </p>
-                <button type="button" className="btn-primary" onClick={() => onSelect(spec.fileName)}>
-                  Abrir
-                </button>
+
+      {projects.length > 0 && (
+        <ul className="spec-tree-projects">
+          {projects.map((projeto) => {
+            const node = nodes[projeto];
+            return (
+              <li key={projeto} className="spec-tree-project">
+                <p className="spec-tree-node spec-tree-node--project">{projeto}</p>
+                <ul className="spec-tree-branch">
+                  {node?.status === 'loading' && (
+                    <li>
+                      <p role="status" className="spec-tree-node">
+                        Carregando...
+                      </p>
+                    </li>
+                  )}
+                  {node?.status === 'error' && (
+                    <li>
+                      <div role="alert" className="spec-tree-node">
+                        <p>Não foi possível carregar as specs.</p>
+                        <button type="button" onClick={() => loadSpecsFor(projeto)}>
+                          Tentar novamente
+                        </button>
+                      </div>
+                    </li>
+                  )}
+                  {node?.status === 'success' && node.specs!.length === 0 && (
+                    <li>
+                      <p className="spec-tree-node spec-tree-empty">Nenhuma spec ainda.</p>
+                    </li>
+                  )}
+                  {node?.status === 'success' &&
+                    node.specs!.map((spec) => {
+                      const isSelected = selected?.projeto === projeto && selected.fileName === spec.fileName;
+                      return (
+                        <li key={spec.fileName} className="spec-tree-file-row">
+                          <button
+                            type="button"
+                            className={`spec-tree-file${isSelected ? ' spec-tree-file--active' : ''}`}
+                            onClick={() => onSelectSpec(projeto, spec.fileName)}
+                          >
+                            {spec.fileName}
+                            {spec.status && <span className="spec-tree-file-status"> · {spec.status}</span>}
+                          </button>
+                          <button
+                            type="button"
+                            className="spec-tree-view"
+                            onClick={() => onViewSpec(projeto, spec.fileName)}
+                            aria-label={`Visualizar ${spec.fileName}`}
+                          >
+                            <EyeIcon />
+                          </button>
+                        </li>
+                      );
+                    })}
+                  <li>
+                    {creatingSpecIn === projeto ? (
+                      <form onSubmit={(e) => handleCreateSpec(e, projeto)} className="workspace-details-form">
+                        <label htmlFor={`new-spec-name-${projeto}`}>Nome da spec</label>
+                        <input
+                          id={`new-spec-name-${projeto}`}
+                          value={specName}
+                          onChange={(e) => setSpecName(e.target.value)}
+                          placeholder="minha-spec"
+                          disabled={specSubmitting}
+                          required
+                        />
+                        {specCreateError && <p role="alert">{specCreateError}</p>}
+                        <div className="credential-inline-form-actions">
+                          <button type="submit" className="btn-primary" disabled={specSubmitting}>
+                            {specSubmitting ? 'Criando...' : 'Criar'}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setCreatingSpecIn(null);
+                              setSpecCreateError(null);
+                            }}
+                            disabled={specSubmitting}
+                          >
+                            Cancelar
+                          </button>
+                        </div>
+                      </form>
+                    ) : (
+                      <button
+                        type="button"
+                        className="link-button spec-tree-node"
+                        onClick={() => {
+                          setCreatingSpecIn(projeto);
+                          setSpecName('');
+                        }}
+                      >
+                        + Nova spec
+                      </button>
+                    )}
+                  </li>
+                </ul>
               </li>
-            ))}
-          </ul>
-        </>
+            );
+          })}
+        </ul>
       )}
 
-      {!creating && (
-        <button type="button" onClick={() => setCreating(true)}>
-          Nova spec
-        </button>
-      )}
-      {creating && (
-        <form onSubmit={handleCreate} className="workspace-details-form">
-          <label htmlFor="new-spec-name">Nome da spec</label>
-          <input id="new-spec-name" value={fileName} onChange={(e) => setFileName(e.target.value)} placeholder="minha-spec" disabled={submitting} required />
-          {createError && <p role="alert">{createError}</p>}
+      {creatingProject && (
+        <form onSubmit={handleCreateProject} className="workspace-details-form">
+          <label htmlFor="new-project-name">Nome do projeto</label>
+          <input id="new-project-name" value={projectName} onChange={(e) => setProjectName(e.target.value)} disabled={projectSubmitting} required />
+          {projectCreateError && <p role="alert">{projectCreateError}</p>}
           <div className="credential-inline-form-actions">
-            <button type="submit" className="btn-primary" disabled={submitting}>
-              {submitting ? 'Criando...' : 'Criar'}
+            <button type="submit" className="btn-primary" disabled={projectSubmitting}>
+              {projectSubmitting ? 'Criando...' : 'Criar'}
             </button>
-            <button type="button" onClick={() => { setCreating(false); setCreateError(null); }} disabled={submitting}>
+            <button
+              type="button"
+              onClick={() => {
+                setCreatingProject(false);
+                setProjectCreateError(null);
+              }}
+              disabled={projectSubmitting}
+            >
               Cancelar
             </button>
           </div>
@@ -258,7 +329,7 @@ function SpecFilePicker({
       )}
     </div>
   );
-}
+});
 
 // ---------------------------------------------------------------------------
 // Nível 3: editor de conteúdo + Subir US
@@ -268,12 +339,10 @@ function SpecEditor({
   workspaceId,
   projeto,
   fileName,
-  onTrocarSpec,
 }: {
   workspaceId: number;
   projeto: string;
   fileName: string;
-  onTrocarSpec: () => void;
 }) {
   const [content, setContent] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -339,13 +408,8 @@ function SpecEditor({
   }
 
   return (
-    <div>
-      <h2>
-        {fileName}{' '}
-        <button type="button" className="link-button" onClick={onTrocarSpec}>
-          trocar spec
-        </button>
-      </h2>
+    <div className="spec-editor">
+      <h2>{fileName}</h2>
       {loadError && <p role="alert">{loadError}</p>}
       {content !== null && (
         <form onSubmit={handleSave}>
@@ -382,8 +446,35 @@ function SpecEditor({
 }
 
 // ---------------------------------------------------------------------------
+// Modal genérico (fecha no X, no backdrop ou em Escape) - usado pelo botão "ver" ao lado de cada spec
+// na árvore, que agora é a única forma de abrir o conteúdo bruto (a antiga região sempre-visível/
+// accordion foi removida - o destaque da tela principal é a conversa, seção 5.2/5.4).
+// ---------------------------------------------------------------------------
+
+function Modal({ onClose, children }: { onClose: () => void; children: ReactNode }) {
+  useEffect(() => {
+    function handleKeyDown(event: globalThis.KeyboardEvent) {
+      if (event.key === 'Escape') onClose();
+    }
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [onClose]);
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+        <button type="button" className="modal-close" onClick={onClose} aria-label="Fechar">
+          ×
+        </button>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Caixa de chat com a skill "specs" hospedada no Hermes (seção 5.2) - conversa livre, nunca escreve no
-// storage sozinha; o operador decide o que aproveitar via o editor acima.
+// storage sozinha; o operador decide o que aproveitar abrindo o conteúdo pelo botão "ver" na árvore.
 // ---------------------------------------------------------------------------
 
 interface ChatMessage {
@@ -403,8 +494,7 @@ function SpecChatBox({ workspaceId, projeto, fileName }: { workspaceId: number; 
     setError(null);
   }, [workspaceId, projeto, fileName]);
 
-  async function handleSend(event: FormEvent) {
-    event.preventDefault();
+  async function handleSend() {
     const text = draft.trim();
     if (text.length === 0) return;
     const nextMessages: ChatMessage[] = [...messages, { role: 'user', content: text }];
@@ -425,25 +515,65 @@ function SpecChatBox({ workspaceId, projeto, fileName }: { workspaceId: number; 
     }
   }
 
+  // Mesmo comportamento da caixa de conversa do OpenWebUI (seção 5.4): Enter envia, Shift+Enter quebra
+  // linha - o operador não precisa alcançar o botão pra manter o ritmo da conversa.
+  function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault();
+      if (!sending && draft.trim().length > 0) void handleSend();
+    }
+  }
+
   return (
-    <div className="spec-chat">
-      <h2>Conversar com a skill specs</h2>
-      <ul className="spec-chat-messages">
-        {messages.map((message, index) => (
-          <li key={index} className={`spec-chat-message spec-chat-message--${message.role}`}>
-            <p>{message.content}</p>
-          </li>
-        ))}
-      </ul>
-      {error && <p role="alert">{error}</p>}
-      <form onSubmit={handleSend} className="spec-chat-form">
-        <label htmlFor="spec-chat-input">Mensagem</label>
-        <textarea id="spec-chat-input" value={draft} onChange={(e) => setDraft(e.target.value)} rows={2} disabled={sending} />
-        <button type="submit" className="btn-primary" disabled={sending || draft.trim().length === 0}>
-          {sending ? 'Enviando...' : 'Enviar'}
-        </button>
+    <>
+      {/* Só antes da primeira mensagem (seção 5.4) - o título ocupa o centro da tela, sem borda/caixa
+          nenhuma; uma vez que a conversa começa, ele cede lugar às mensagens de verdade. */}
+      {messages.length === 0 ? (
+        <div className="spec-chat-intro">
+          <h2>O que vamos especificar hoje?</h2>
+        </div>
+      ) : (
+        <div className="spec-chat">
+          <ul className="spec-chat-messages">
+            {messages.map((message, index) => (
+              <li key={index} className={`spec-chat-message spec-chat-message--${message.role}`}>
+                <p>{message.content}</p>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {error && <p role="alert" className="spec-chat-error">{error}</p>}
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          void handleSend();
+        }}
+        className="spec-chat-form"
+      >
+        {/* O título "O que vamos especificar hoje?" já cumpre o papel do label visível (seção 5.4) -
+            "Mensagem" continua existindo só para leitor de tela, via aria-label. */}
+        <div className="spec-chat-input-wrap">
+          <textarea
+            id="spec-chat-input"
+            aria-label="Mensagem"
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={handleKeyDown}
+            rows={2}
+            disabled={sending}
+          />
+          <button
+            type="submit"
+            className="spec-chat-send"
+            disabled={sending || draft.trim().length === 0}
+            aria-label={sending ? 'Enviando...' : 'Enviar'}
+          >
+            {sending ? '…' : '↑'}
+          </button>
+        </div>
       </form>
-    </div>
+    </>
   );
 }
 
@@ -451,14 +581,25 @@ function SpecChatBox({ workspaceId, projeto, fileName }: { workspaceId: number; 
 
 export function SpecsPage() {
   const { workspaceId } = useWorkspace();
+  const { setNavOpen } = useOutletContext<LayoutContext>();
   const [clientId, setClientId] = useState<number | null | undefined>(undefined);
-  const [projeto, setProjeto] = useState<string | null>(null);
-  const [fileName, setFileName] = useState<string | null>(null);
+  const [selected, setSelected] = useState<{ projeto: string; fileName: string } | null>(null);
+  const [viewing, setViewing] = useState<{ projeto: string; fileName: string } | null>(null);
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const treeRef = useRef<SpecTreeHandle>(null);
   const loadSeq = useRef(0);
 
+  // Escolher uma spec entra no modo conversa (seção 5.2/5.4) - as duas barras laterais (nav principal e
+  // a árvore desta página) só disputam espaço com o chat, então recolhem sozinhas nesse momento.
+  function selectSpec(projeto: string, fileName: string) {
+    setSelected({ projeto, fileName });
+    setSidebarOpen(false);
+    setNavOpen(false);
+  }
+
   useEffect(() => {
-    setProjeto(null);
-    setFileName(null);
+    setSelected(null);
+    setViewing(null);
     setClientId(undefined);
     if (workspaceId === null) return;
     const seq = ++loadSeq.current;
@@ -502,20 +643,68 @@ export function SpecsPage() {
   }
 
   return (
-    <section>
-      <h1>Specs</h1>
+    <section className={`specs-page${sidebarOpen ? '' : ' specs-page--sidebar-collapsed'}`}>
+      {/* Segunda barra lateral, só desta tela (seção 5.2) - a árvore de projetos/specs fica sempre à
+          vista (ou recolhida a um clique), deixando toda a largura restante do viewport para a conversa
+          + conteúdo da spec aberta. */}
+      <aside className={`specs-sidebar${sidebarOpen ? '' : ' specs-sidebar--collapsed'}`}>
+        <div className="specs-sidebar-header">
+          {sidebarOpen && <h1>Specs</h1>}
+          <div className="specs-sidebar-actions">
+            {sidebarOpen && (
+              <button
+                type="button"
+                className="spec-tree-new-project"
+                onClick={() => treeRef.current?.openCreateProject()}
+                aria-label="Novo projeto"
+              >
+                +
+              </button>
+            )}
+            <button
+              type="button"
+              className="link-button specs-sidebar-toggle"
+              onClick={() => setSidebarOpen((open) => !open)}
+              aria-label={sidebarOpen ? 'Recolher lista de specs' : 'Expandir lista de specs'}
+              aria-expanded={sidebarOpen}
+            >
+              {sidebarOpen ? '‹' : '›'}
+            </button>
+          </div>
+        </div>
+        {sidebarOpen && (
+          <SpecTree
+            ref={treeRef}
+            workspaceId={workspaceId}
+            selected={selected}
+            onSelectSpec={selectSpec}
+            onViewSpec={(projeto, fileName) => setViewing({ projeto, fileName })}
+          />
+        )}
+      </aside>
 
-      {projeto === null && <ProjectPicker workspaceId={workspaceId} onSelect={setProjeto} />}
+      <div className="specs-main">
+        {selected === null ? (
+          <p className="specs-main-placeholder">Selecione uma spec ao lado para começar.</p>
+        ) : (
+          <>
+            {/* Com as duas barras recolhidas ao entrar no modo conversa (seção 5.4), o "Specs" do
+                cabeçalho some da tela - este breadcrumb assume o papel de título, mostrando qual
+                spec está aberta. */}
+            <p className="specs-breadcrumb">
+              {selected.projeto} / {selected.fileName}
+            </p>
+            {/* A conversa ocupa toda a região principal agora (seção 5.2/5.4) - o conteúdo bruto só abre
+                sob demanda, no modal acionado pelo botão "ver" na árvore. */}
+            <SpecChatBox workspaceId={workspaceId} projeto={selected.projeto} fileName={selected.fileName} />
+          </>
+        )}
+      </div>
 
-      {projeto !== null && fileName === null && (
-        <SpecFilePicker workspaceId={workspaceId} projeto={projeto} onSelect={setFileName} onTrocarProjeto={() => setProjeto(null)} />
-      )}
-
-      {projeto !== null && fileName !== null && (
-        <>
-          <SpecEditor workspaceId={workspaceId} projeto={projeto} fileName={fileName} onTrocarSpec={() => setFileName(null)} />
-          <SpecChatBox workspaceId={workspaceId} projeto={projeto} fileName={fileName} />
-        </>
+      {viewing !== null && (
+        <Modal onClose={() => setViewing(null)}>
+          <SpecEditor workspaceId={workspaceId} projeto={viewing.projeto} fileName={viewing.fileName} />
+        </Modal>
       )}
     </section>
   );

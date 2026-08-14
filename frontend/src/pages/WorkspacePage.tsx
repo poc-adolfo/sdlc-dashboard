@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { api, ApiError } from '../api/client';
 import { useWorkspace, useWorkspaceList } from '../workspace/WorkspaceContext';
 
@@ -8,7 +9,9 @@ import { useWorkspace, useWorkspaceList } from '../workspace/WorkspaceContext';
 // precisam de um workspace já existente (assessment/credencial são sempre de um workspace).
 
 // ---------------------------------------------------------------------------
-// 1. Dados do workspace - cria quando não há workspace selecionado, edita quando há.
+// 1. Workspace - identificação, cliente e assessment vivem juntos num único bloco (o operador preenche
+//    tudo e conclui de uma vez, em vez de 3 salvamentos separados). "Concluir" cria/atualiza o workspace,
+//    grava o assessment e o conclui, então segue para specs.
 // ---------------------------------------------------------------------------
 
 interface WorkspaceDetails {
@@ -18,95 +21,222 @@ interface WorkspaceDetails {
   platformRef: string;
 }
 
-function WorkspaceDetailsSection({
+interface ClientOption {
+  id: number;
+  name: string;
+}
+
+interface Assessment {
+  id: number;
+  workspaceId: number;
+  clientId: number;
+  clientName: string;
+  content: string;
+  status: 'em_andamento' | 'concluido';
+}
+
+type SelectedClient = { kind: 'existing'; id: number; name: string } | { kind: 'new'; name: string };
+
+type SearchState = 'idle' | 'loading' | 'success' | 'error';
+
+function WorkspaceSection({
   workspaceId,
-  onCreated,
+  onWorkspaceCreated,
 }: {
   workspaceId: number | null;
-  onCreated: (workspace: { id: number; name: string }) => void;
+  onWorkspaceCreated: (workspace: { id: number; name: string }) => void;
 }) {
+  const navigate = useNavigate();
   const { refresh: refreshWorkspaceList } = useWorkspaceList();
+
   const [name, setName] = useState('');
   const [platform, setPlatform] = useState<'github' | 'azure_devops'>('github');
   const [platformRef, setPlatformRef] = useState('');
-  const [loadingExisting, setLoadingExisting] = useState(false);
+
+  const [selectedClient, setSelectedClient] = useState<SelectedClient | null>(null);
+  const [clientQuery, setClientQuery] = useState('');
+  const [clientResults, setClientResults] = useState<ClientOption[]>([]);
+  const [clientSearchState, setClientSearchState] = useState<SearchState>('idle');
+  const clientSearchSeq = useRef(0);
+
+  const [content, setContent] = useState('');
+
+  const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [saved, setSaved] = useState(false);
   // Collapsible once there's something to collapse (an existing, already-filled-in workspace) - starts
   // open so create mode (nothing to hide yet) and first-time editing both show the fields right away.
-  // Controlled (not just a static `open` attribute) so a re-render from unrelated state here (saving,
+  // Controlled (not just a static `open` attribute) so a re-render from unrelated state here (submitting,
   // editing a field) doesn't fight the operator's own manual toggle.
   const [detailsOpen, setDetailsOpen] = useState(true);
   // Same request-sequence guard used throughout this app: a slower response for a workspace switched
   // away from must not overwrite the fields for whichever one is on screen now.
   const loadSeq = useRef(0);
 
+  // Loads both the workspace's own fields and its in-progress assessment (if any) together - a reload or
+  // a trip to another tab must restore everything the operator already filled in, not just the workspace
+  // identity, or "Concluir" would look like it silently lost the client/content.
   useEffect(() => {
     setError(null);
-    setSaved(false);
     if (workspaceId === null) {
       setName('');
       setPlatform('github');
       setPlatformRef('');
+      setSelectedClient(null);
+      setClientQuery('');
+      setContent('');
       return;
     }
     const seq = ++loadSeq.current;
-    setLoadingExisting(true);
-    api.get<WorkspaceDetails>(`/workspaces/${workspaceId}`).then(
-      (data) => {
+    setLoading(true);
+    setLoadError(null);
+    Promise.all([
+      api.get<WorkspaceDetails>(`/workspaces/${workspaceId}`),
+      api.get<Assessment>(`/workspaces/${workspaceId}/assessments/current`).then(
+        (assessment) => assessment,
+        (err: unknown) => {
+          if (err instanceof ApiError && err.status === 404) return null;
+          throw err;
+        },
+      ),
+    ]).then(
+      ([workspace, assessment]) => {
         if (seq !== loadSeq.current) return;
-        setName(data.name);
-        setPlatform(data.platform);
-        setPlatformRef(data.platformRef);
-        setLoadingExisting(false);
+        setName(workspace.name);
+        setPlatform(workspace.platform);
+        setPlatformRef(workspace.platformRef);
+        if (assessment) {
+          setSelectedClient({ kind: 'existing', id: assessment.clientId, name: assessment.clientName });
+          setContent(assessment.content);
+        } else {
+          setSelectedClient(null);
+          setContent('');
+        }
+        setClientQuery('');
+        setLoading(false);
       },
       () => {
         if (seq !== loadSeq.current) return;
-        setLoadingExisting(false);
+        setLoading(false);
+        setLoadError('Não foi possível carregar os dados do workspace. Tente novamente.');
       },
     );
   }, [workspaceId]);
 
-  async function handleSubmit(event: FormEvent) {
-    event.preventDefault();
+  // seção 5.1: combobox "buscar ou criar" - searches as the operator types, debounced so every keystroke
+  // doesn't fire a request. Picking a result (or offering to create a new client) is now purely local
+  // state - the client is only actually persisted when the whole section is concluded.
+  useEffect(() => {
+    const trimmed = clientQuery.trim();
+    if (trimmed.length === 0) {
+      setClientResults([]);
+      setClientSearchState('idle');
+      clientSearchSeq.current += 1;
+      return;
+    }
+    setClientSearchState('loading');
+    const seq = ++clientSearchSeq.current;
+    const timer = setTimeout(() => {
+      api.get<ClientOption[]>(`/clients?q=${encodeURIComponent(trimmed)}`).then(
+        (data) => {
+          if (seq !== clientSearchSeq.current) return; // a newer search has since started - discard
+          setClientResults(data);
+          setClientSearchState('success');
+        },
+        () => {
+          if (seq !== clientSearchSeq.current) return;
+          setClientResults([]);
+          setClientSearchState('error');
+        },
+      );
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [clientQuery]);
+
+  function chooseClient(client: SelectedClient) {
+    setSelectedClient(client);
+    setClientQuery('');
+    setClientResults([]);
+    setClientSearchState('idle');
+  }
+
+  function trocarCliente() {
+    setSelectedClient(null);
+  }
+
+  const trimmedClientQuery = clientQuery.trim();
+  const exactClientMatch = clientResults.some((r) => r.name.toLowerCase() === trimmedClientQuery.toLowerCase());
+  // QA finding on PR #22: offering "criar novo cliente" while the search is still pending, or after it
+  // failed, risks creating a duplicate client during what might just be a transient outage or an answer
+  // that hasn't arrived yet - only a *completed, successful* search with no exact match may offer it.
+  const canOfferCreateClient = clientSearchState === 'success' && trimmedClientQuery.length > 0 && !exactClientMatch;
+
+  const canSubmit = !submitting && !loading && name.trim().length > 0 && platformRef.trim().length > 0 && selectedClient !== null && content.trim().length > 0;
+
+  // The one action for this whole section - saves the workspace identity, then the assessment (client +
+  // content), then concludes it, then takes the operator straight to specs. Replaces what used to be 3
+  // separate saves (workspace, assessment, concluir) the operator had to remember to do in order.
+  async function handleConcluir() {
     setSubmitting(true);
     setError(null);
-    setSaved(false);
     try {
-      if (workspaceId === null) {
-        const workspace = await api.post<{ id: number; name: string }>('/workspaces', { name, platform, platform_ref: platformRef });
-        await refreshWorkspaceList();
-        onCreated(workspace);
+      let id = workspaceId;
+      if (id === null) {
+        const created = await api.post<{ id: number; name: string }>('/workspaces', { name, platform, platform_ref: platformRef });
+        id = created.id;
+        onWorkspaceCreated(created);
       } else {
-        await api.patch(`/workspaces/${workspaceId}`, { name, platform, platform_ref: platformRef });
-        await refreshWorkspaceList();
-        setSaved(true);
+        await api.patch(`/workspaces/${id}`, { name, platform, platform_ref: platformRef });
       }
+      await refreshWorkspaceList();
+
+      const clientBody = selectedClient!.kind === 'existing' ? { client_id: selectedClient.id } : { client_name: selectedClient!.name };
+      const assessment = await api.post<Assessment>(`/workspaces/${id}/assessments`, { ...clientBody, content });
+      await api.post<{ concluido: true }>(`/workspaces/${id}/assessments/${assessment.id}/concluir`);
+      navigate('/specs');
     } catch (err) {
       // seção 4: platform/platform_ref ficam travados depois que já existe pipeline_instance vinculada -
       // o backend rejeita com 409, o formulário só repassa esse motivo em vez de adivinhar de antemão.
       setError(
         err instanceof ApiError && err.status === 409
           ? 'Plataforma e repositório não podem ser alterados depois que o ciclo já começou para este workspace.'
-          : 'Não foi possível salvar o workspace. Verifique os campos e tente novamente.',
+          : 'Não foi possível concluir. Verifique os campos e tente novamente.',
       );
-    } finally {
       setSubmitting(false);
     }
   }
 
-  if (workspaceId !== null && loadingExisting) return <p role="status">Carregando workspace...</p>;
+  if (workspaceId !== null && loading) return <p role="status">Carregando workspace...</p>;
 
   return (
-    <form onSubmit={handleSubmit} className="workspace-details-form">
+    <div className="workspace-details-form">
       <details
         className="workspace-details-accordion"
         open={detailsOpen}
         onToggle={(e) => setDetailsOpen(e.currentTarget.open)}
       >
-        <summary>{workspaceId === null ? 'Novo workspace' : name || 'Workspace'}</summary>
+        <summary>
+          <span>{workspaceId === null ? 'Novo workspace' : name || 'Workspace'}</span>
+          {/* Concluir lives in the summary bar (not the collapsible body) so it stays visible - and
+              actionable - whether or not the operator has this section expanded. preventDefault/
+              stopPropagation keep the click from also triggering the native <details> toggle. */}
+          <button
+            type="button"
+            className="btn-primary"
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              handleConcluir();
+            }}
+            disabled={!canSubmit}
+          >
+            {submitting ? 'Concluindo...' : 'Concluir'}
+          </button>
+        </summary>
         <div className="workspace-details-accordion-body">
+          {loadError && <p role="alert">{loadError}</p>}
+
           <div className="field-group">
             <span className="field-group-label">Identificação</span>
             <label htmlFor="workspace-name">Nome</label>
@@ -137,241 +267,62 @@ function WorkspaceDetailsSection({
             </div>
           </div>
 
-          {error && <p role="alert">{error}</p>}
-          {saved && <p role="status">Workspace atualizado.</p>}
+          <div className="field-group">
+            <span className="field-group-label">Cliente</span>
+            {selectedClient === null ? (
+              <>
+                <label htmlFor="client-search">Cliente</label>
+                <input
+                  id="client-search"
+                  value={clientQuery}
+                  onChange={(e) => setClientQuery(e.target.value)}
+                  placeholder="Buscar cliente..."
+                  disabled={submitting}
+                />
+                {clientSearchState === 'loading' && <p role="status">Buscando...</p>}
+                {clientSearchState === 'error' && <p role="alert">Não foi possível buscar clientes. Tente novamente.</p>}
+                <ul className="client-results">
+                  {clientResults.map((client) => (
+                    <li key={client.id}>
+                      <button type="button" onClick={() => chooseClient({ kind: 'existing', id: client.id, name: client.name })} disabled={submitting}>
+                        {client.name}
+                      </button>
+                    </li>
+                  ))}
+                  {canOfferCreateClient && (
+                    <li>
+                      <button type="button" onClick={() => chooseClient({ kind: 'new', name: trimmedClientQuery })} disabled={submitting}>
+                        Criar novo cliente: "{trimmedClientQuery}"
+                      </button>
+                    </li>
+                  )}
+                </ul>
+              </>
+            ) : (
+              <p>
+                Cliente: <strong>{selectedClient.name}</strong>{' '}
+                <button type="button" className="link-button" onClick={trocarCliente} disabled={submitting}>
+                  trocar
+                </button>
+              </p>
+            )}
+          </div>
 
-          <button type="submit" className="btn-primary" disabled={submitting}>
-            {submitting ? 'Salvando...' : workspaceId === null ? 'Criar workspace' : 'Salvar'}
-          </button>
+          <div className="field-group">
+            <span className="field-group-label">Assessment</span>
+            <label htmlFor="assessment-content">Conteúdo</label>
+            <textarea id="assessment-content" value={content} onChange={(e) => setContent(e.target.value)} rows={16} disabled={submitting} />
+          </div>
+
+          {error && <p role="alert">{error}</p>}
         </div>
       </details>
-    </form>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// 2. Assessment - mesmo comportamento que já existia em AssessmentPage, só sem o guard de "selecione um
-//    workspace" (o pai só renderiza esta seção quando já há um).
-// ---------------------------------------------------------------------------
-
-interface ClientOption {
-  id: number;
-  name: string;
-}
-
-interface Assessment {
-  id: number;
-  workspaceId: number;
-  clientId: number;
-  content: string;
-  status: 'em_andamento' | 'concluido';
-}
-
-type SelectedClient = { kind: 'existing'; id: number; name: string } | { kind: 'new'; name: string };
-
-type SearchState = 'idle' | 'loading' | 'success' | 'error';
-
-function ClientPicker({ workspaceId, onAssessmentReady }: { workspaceId: number; onAssessmentReady: (assessment: Assessment, client: SelectedClient) => void }) {
-  const [query, setQuery] = useState('');
-  const [results, setResults] = useState<ClientOption[]>([]);
-  const [searchState, setSearchState] = useState<SearchState>('idle');
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  // QA finding on PR #22: a naive debounce only cancels the *timer*, not an already-in-flight request -
-  // a slower response for an earlier keystroke (e.g. "Ac") can still land after a faster response for a
-  // later one ("Acme") and silently overwrite it with stale results. Bumped on every search this effect
-  // starts (not just ones that actually fire past the debounce) so a response can tell whether it's
-  // still the latest.
-  const searchSeq = useRef(0);
-
-  // seção 5.1: combobox "buscar ou criar" - searches as the operator types, debounced so every
-  // keystroke doesn't fire a request.
-  useEffect(() => {
-    const trimmed = query.trim();
-    if (trimmed.length === 0) {
-      setResults([]);
-      setSearchState('idle');
-      searchSeq.current += 1;
-      return;
-    }
-    setSearchState('loading');
-    const seq = ++searchSeq.current;
-    const timer = setTimeout(() => {
-      api.get<ClientOption[]>(`/clients?q=${encodeURIComponent(trimmed)}`).then(
-        (data) => {
-          if (seq !== searchSeq.current) return; // a newer search has since started - discard
-          setResults(data);
-          setSearchState('success');
-        },
-        () => {
-          if (seq !== searchSeq.current) return;
-          setResults([]);
-          setSearchState('error');
-        },
-      );
-    }, 300);
-    return () => clearTimeout(timer);
-  }, [query]);
-
-  async function choose(client: SelectedClient) {
-    setSubmitting(true);
-    setError(null);
-    try {
-      const body = client.kind === 'existing' ? { client_id: client.id } : { client_name: client.name };
-      const assessment = await api.post<Assessment>(`/workspaces/${workspaceId}/assessments`, body);
-      onAssessmentReady(assessment, client);
-    } catch {
-      setError('Não foi possível salvar o cliente. Tente novamente.');
-    } finally {
-      setSubmitting(false);
-    }
-  }
-
-  const trimmedQuery = query.trim();
-  const exactMatch = results.some((r) => r.name.toLowerCase() === trimmedQuery.toLowerCase());
-  // QA finding on PR #22: offering "criar novo cliente" while the search is still pending, or after it
-  // failed, risks creating a duplicate client during what might just be a transient outage or an answer
-  // that hasn't arrived yet - only a *completed, successful* search with no exact match may offer it.
-  const canOfferCreate = searchState === 'success' && trimmedQuery.length > 0 && !exactMatch;
-
-  return (
-    <div>
-      <label htmlFor="client-search">Cliente</label>
-      <input
-        id="client-search"
-        value={query}
-        onChange={(e) => setQuery(e.target.value)}
-        placeholder="Buscar cliente..."
-        disabled={submitting}
-      />
-      {searchState === 'loading' && <p role="status">Buscando...</p>}
-      {searchState === 'error' && <p role="alert">Não foi possível buscar clientes. Tente novamente.</p>}
-      <ul className="client-results">
-        {results.map((client) => (
-          <li key={client.id}>
-            <button type="button" onClick={() => choose({ kind: 'existing', id: client.id, name: client.name })} disabled={submitting}>
-              {client.name}
-            </button>
-          </li>
-        ))}
-        {canOfferCreate && (
-          <li>
-            <button type="button" onClick={() => choose({ kind: 'new', name: trimmedQuery })} disabled={submitting}>
-              Criar novo cliente: "{trimmedQuery}"
-            </button>
-          </li>
-        )}
-      </ul>
-      {error && <p role="alert">{error}</p>}
     </div>
   );
 }
 
-function AssessmentSection({ workspaceId }: { workspaceId: number }) {
-  const [selectedClient, setSelectedClient] = useState<SelectedClient | null>(null);
-  const [assessment, setAssessment] = useState<Assessment | null>(null);
-  const [content, setContent] = useState('');
-  const [saving, setSaving] = useState(false);
-  const [saveError, setSaveError] = useState<string | null>(null);
-  const [concluding, setConcluding] = useState(false);
-  const [concluded, setConcluded] = useState(false);
-  const [concludeError, setConcludeError] = useState<string | null>(null);
-
-  function resetAssessmentState() {
-    setSelectedClient(null);
-    setAssessment(null);
-    setContent('');
-    setSaveError(null);
-    setConcluded(false);
-    setConcludeError(null);
-  }
-
-  // QA finding on PR #22: the workspace picker can change `workspaceId` at any time, but the loaded
-  // assessment/client were kept as-is - Salvar/Concluir would then hit the *new* workspaceId while still
-  // holding the *old* workspace's assessment id and client. Any workspace change must start over from
-  // the client picker, never carry stale state across it.
-  useEffect(() => {
-    resetAssessmentState();
-  }, [workspaceId]);
-
-  function handleAssessmentReady(loaded: Assessment, client: SelectedClient) {
-    setSelectedClient(client);
-    setAssessment(loaded);
-    setContent(loaded.content);
-    setConcluded(false);
-    setConcludeError(null);
-  }
-
-  function trocarCliente() {
-    resetAssessmentState();
-  }
-
-  async function handleSave(event: FormEvent) {
-    event.preventDefault();
-    if (!assessment) return;
-    setSaving(true);
-    setSaveError(null);
-    try {
-      const updated = await api.post<Assessment>(`/workspaces/${workspaceId}/assessments`, {
-        assessment_id: assessment.id,
-        client_id: assessment.clientId,
-        content,
-      });
-      setAssessment(updated);
-    } catch {
-      setSaveError('Não foi possível salvar o assessment. Tente novamente.');
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  async function handleConclude() {
-    if (!assessment) return;
-    setConcluding(true);
-    setConcludeError(null);
-    setConcluded(false);
-    try {
-      await api.post<{ concluido: true }>(`/workspaces/${workspaceId}/assessments/${assessment.id}/concluir`);
-      setConcluded(true);
-    } catch {
-      setConcludeError('Não foi possível concluir o assessment. Tente novamente.');
-    } finally {
-      setConcluding(false);
-    }
-  }
-
-  return assessment === null ? (
-    <ClientPicker workspaceId={workspaceId} onAssessmentReady={handleAssessmentReady} />
-  ) : (
-    <form onSubmit={handleSave}>
-      <p>
-        Cliente: <strong>{selectedClient?.name}</strong>{' '}
-        <button type="button" className="link-button" onClick={trocarCliente}>
-          trocar
-        </button>
-      </p>
-
-      <label htmlFor="assessment-content">Conteúdo</label>
-      <textarea id="assessment-content" value={content} onChange={(e) => setContent(e.target.value)} rows={16} />
-      {saveError && <p role="alert">{saveError}</p>}
-
-      <div className="assessment-actions">
-        <button type="submit" className="btn-primary" disabled={saving}>
-          {saving ? 'Salvando...' : 'Salvar'}
-        </button>
-        <button type="button" onClick={handleConclude} disabled={concluding || saving}>
-          {concluding ? 'Concluindo...' : 'Concluir'}
-        </button>
-      </div>
-
-      {concludeError && <p role="alert">{concludeError}</p>}
-      {concluded && <p role="status">Assessment concluído.</p>}
-    </form>
-  );
-}
-
 // ---------------------------------------------------------------------------
-// 3. Credenciais - lista das 7 perfis Hermes (seção 8), cadastradas ou não, com edição inline por linha.
+// 2. Credenciais - lista das 7 perfis Hermes (seção 8), cadastradas ou não, com edição inline por linha.
 // ---------------------------------------------------------------------------
 
 interface Credential {
@@ -422,8 +373,11 @@ function InlineCredentialForm({
   // which unmounts this row (and this form with it) before the request settles - mountedRef catches
   // that so a stale response never calls onSaved() against a closure still pointing at the old workspace.
   const mountedRef = useRef(true);
-  useEffect(() => () => {
-    mountedRef.current = false;
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
   }, []);
 
   async function handleSubmit(event: FormEvent) {
@@ -577,27 +531,42 @@ function CredentialsSection({ workspaceId }: { workspaceId: number }) {
 }
 
 // ---------------------------------------------------------------------------
+// 4. SectionAccordion - the same collapsible pattern WorkspaceDetailsSection already used for its own
+//    "Novo workspace"/name box, promoted to every top-level region of this page (Assessment, Credenciais)
+//    so each one reads as its own clearly delimited block instead of a heading followed by loose content.
+// ---------------------------------------------------------------------------
+
+function SectionAccordion({ title, children }: { title: string; children: ReactNode }) {
+  const [open, setOpen] = useState(true);
+  return (
+    <details className="section-accordion" open={open} onToggle={(e) => setOpen(e.currentTarget.open)}>
+      <summary>
+        <h2>{title}</h2>
+      </summary>
+      <div className="section-accordion-body">{children}</div>
+    </details>
+  );
+}
+
+// ---------------------------------------------------------------------------
 
 export function WorkspacePage() {
   const { workspaceId, setWorkspaceId } = useWorkspace();
 
-  function handleCreated(workspace: { id: number; name: string }) {
+  function handleWorkspaceCreated(workspace: { id: number; name: string }) {
     setWorkspaceId(workspace.id);
   }
 
   return (
-    <section>
+    <section className="workspace-page">
       <h1>Workspace</h1>
-      <WorkspaceDetailsSection workspaceId={workspaceId} onCreated={handleCreated} />
+
+      <WorkspaceSection workspaceId={workspaceId} onWorkspaceCreated={handleWorkspaceCreated} />
 
       {workspaceId !== null && (
-        <>
-          <h2>Assessment</h2>
-          <AssessmentSection workspaceId={workspaceId} />
-
-          <h2>Credenciais</h2>
+        <SectionAccordion title="Credenciais">
           <CredentialsSection workspaceId={workspaceId} />
-        </>
+        </SectionAccordion>
       )}
     </section>
   );

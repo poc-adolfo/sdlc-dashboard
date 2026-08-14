@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { WorkspaceProvider, WorkspaceListProvider, useWorkspace } from '../workspace/WorkspaceContext';
 import { WorkspacePage } from './WorkspacePage';
 
@@ -8,13 +9,20 @@ function jsonResponse(status: number, body: unknown) {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 }
 
+// Every test exercises the same "reached /specs" outcome for a successful Concluir, so the app needs a
+// real route to land on - WorkspacePage alone has no way to show that a navigate('/specs') happened.
 function renderPage() {
   return render(
-    <WorkspaceProvider>
-      <WorkspaceListProvider>
-        <WorkspacePage />
-      </WorkspaceListProvider>
-    </WorkspaceProvider>,
+    <MemoryRouter initialEntries={['/workspace']}>
+      <WorkspaceProvider>
+        <WorkspaceListProvider>
+          <Routes>
+            <Route path="/workspace" element={<WorkspacePage />} />
+            <Route path="/specs" element={<p>Specs screen</p>} />
+          </Routes>
+        </WorkspaceListProvider>
+      </WorkspaceProvider>
+    </MemoryRouter>,
   );
 }
 
@@ -32,22 +40,40 @@ function WorkspaceSwitcher({ to }: { to: number }) {
 const WORKSPACE = { id: 7, name: 'Acme Platform', slug: 'acme-platform', platform: 'github', platformRef: 'acme/platform', clientId: null, status: 'active', createdAt: '2026-08-05T00:00:00Z' };
 const DEFAULT_CONTENT = '## Linha de negocio do cliente\n';
 
-describe('WorkspacePage - creating/editing the workspace', () => {
+// Shared by every describe block below: WorkspaceSection always fetches the workspace's own fields plus
+// its in-progress assessment (for prefill) as soon as a workspaceId exists, and CredentialsSection always
+// fetches the credentials list - tests that don't care about one of these still need it stubbed or every
+// request they didn't anticipate throws "unexpected request".
+function withWorkspaceHandlers(extra: (url: string, init?: RequestInit) => Response | Promise<Response> | undefined) {
+  return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === 'string' ? input : input.toString();
+    const result = await extra(url, init);
+    if (result) return result;
+    if (url === `/workspaces/${WORKSPACE.id}`) return jsonResponse(200, WORKSPACE);
+    if (url === `/workspaces/${WORKSPACE.id}/assessments/current`) return jsonResponse(404, {});
+    if (url === `/workspaces/${WORKSPACE.id}/credenciais`) return jsonResponse(200, []);
+    if (url === '/workspaces') return jsonResponse(200, [WORKSPACE]);
+    throw new Error(`unexpected request: ${url}`);
+  });
+}
+
+describe('WorkspacePage - Workspace section (identidade + cliente + assessment)', () => {
   beforeEach(() => {
     localStorage.clear();
   });
 
-  it('shows a blank create form and no Assessment/Credenciais sections when no workspace is selected', async () => {
+  it('shows a blank form with Concluir disabled, and no Credenciais section, when no workspace is selected', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(200, [])));
     renderPage();
 
     expect(await screen.findByLabelText('Nome')).toHaveValue('');
-    expect(screen.getByRole('button', { name: 'Criar workspace' })).toBeInTheDocument();
-    expect(screen.queryByRole('heading', { name: 'Assessment' })).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Cliente')).toBeInTheDocument();
+    expect(screen.getByLabelText('Conteúdo')).toHaveValue('');
+    expect(screen.getByRole('button', { name: 'Concluir' })).toBeDisabled();
     expect(screen.queryByRole('heading', { name: 'Credenciais' })).not.toBeInTheDocument();
   });
 
-  it('creates a workspace and reveals the Assessment/Credenciais sections for it', async () => {
+  it('fills every field and Concluir creates the workspace, saves the assessment, concludes it, and navigates to specs', async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === 'string' ? input : input.toString();
       if (url === '/workspaces' && init?.method === 'POST') {
@@ -55,9 +81,16 @@ describe('WorkspacePage - creating/editing the workspace', () => {
         expect(body).toEqual({ name: 'Acme Platform', platform: 'github', platform_ref: 'acme/platform' });
         return jsonResponse(201, WORKSPACE);
       }
-      if (url === '/workspaces') return jsonResponse(200, [WORKSPACE]);
+      if (url === '/workspaces') return jsonResponse(200, []);
       if (url === `/workspaces/${WORKSPACE.id}`) return jsonResponse(200, WORKSPACE);
-      if (url === `/workspaces/${WORKSPACE.id}/credenciais`) return jsonResponse(200, []);
+      if (url === `/workspaces/${WORKSPACE.id}/assessments/current`) return jsonResponse(404, {});
+      if (url.startsWith('/clients?q=')) return jsonResponse(200, [{ id: 1, name: 'Acme Corp' }]);
+      if (url === `/workspaces/${WORKSPACE.id}/assessments` && init?.method === 'POST') {
+        const body = JSON.parse(init.body as string);
+        expect(body).toEqual({ client_id: 1, content: 'Cliente vende sapatos.' });
+        return jsonResponse(200, { id: 42, workspaceId: WORKSPACE.id, clientId: 1, content: 'Cliente vende sapatos.', status: 'em_andamento' });
+      }
+      if (url === `/workspaces/${WORKSPACE.id}/assessments/42/concluir`) return jsonResponse(200, { concluido: true });
       throw new Error(`unexpected request: ${url}`);
     });
     vi.stubGlobal('fetch', fetchMock);
@@ -66,135 +99,116 @@ describe('WorkspacePage - creating/editing the workspace', () => {
 
     await userEvent.type(screen.getByLabelText('Nome'), 'Acme Platform');
     await userEvent.type(screen.getByLabelText('Repositório/Projeto'), 'acme/platform');
-    await userEvent.click(screen.getByRole('button', { name: 'Criar workspace' }));
+    await userEvent.type(screen.getByLabelText('Cliente'), 'Acme');
+    await userEvent.click(await screen.findByRole('button', { name: 'Acme Corp' }));
+    await userEvent.clear(screen.getByLabelText('Conteúdo'));
+    await userEvent.type(screen.getByLabelText('Conteúdo'), 'Cliente vende sapatos.');
 
-    expect(await screen.findByRole('heading', { name: 'Assessment' })).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'Credenciais' })).toBeInTheDocument();
-    expect(screen.getByLabelText('Nome')).toHaveValue('Acme Platform'); // now in edit mode, reloaded from the server
+    const concluirButton = screen.getByRole('button', { name: 'Concluir' });
+    expect(concluirButton).toBeEnabled();
+    await userEvent.click(concluirButton);
+
+    expect(await screen.findByText('Specs screen')).toBeInTheDocument();
   });
 
-  it('loads and edits an already-selected workspace via PATCH', async () => {
+  it('loads an existing workspace plus its in-progress assessment, and Concluir re-saves everything via PATCH', async () => {
     localStorage.setItem('sdlc-dashboard:workspaceId', String(WORKSPACE.id));
-    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = typeof input === 'string' ? input : input.toString();
+    const fetchMock = withWorkspaceHandlers((url, init) => {
       if (url === `/workspaces/${WORKSPACE.id}` && init?.method === 'PATCH') {
         const body = JSON.parse(init.body as string);
         expect(body).toEqual({ name: 'Renamed', platform: 'github', platform_ref: 'acme/platform' });
         return jsonResponse(200, { ...WORKSPACE, name: 'Renamed' });
       }
-      if (url === `/workspaces/${WORKSPACE.id}`) return jsonResponse(200, WORKSPACE);
-      if (url === '/workspaces') return jsonResponse(200, [WORKSPACE]);
-      if (url === `/workspaces/${WORKSPACE.id}/credenciais`) return jsonResponse(200, []);
-      throw new Error(`unexpected request: ${url}`);
+      if (url === `/workspaces/${WORKSPACE.id}/assessments/current`) {
+        return jsonResponse(200, { id: 42, workspaceId: WORKSPACE.id, clientId: 1, clientName: 'Acme Corp', content: DEFAULT_CONTENT, status: 'em_andamento' });
+      }
+      if (url === `/workspaces/${WORKSPACE.id}/assessments` && init?.method === 'POST') {
+        const body = JSON.parse(init.body as string);
+        expect(body).toEqual({ client_id: 1, content: DEFAULT_CONTENT });
+        return jsonResponse(200, { id: 42, workspaceId: WORKSPACE.id, clientId: 1, content: DEFAULT_CONTENT, status: 'em_andamento' });
+      }
+      if (url === `/workspaces/${WORKSPACE.id}/assessments/42/concluir`) return jsonResponse(200, { concluido: true });
+      return undefined;
     });
     vi.stubGlobal('fetch', fetchMock);
     renderPage();
 
     const nameInput = await screen.findByLabelText('Nome');
     await waitFor(() => expect(nameInput).toHaveValue('Acme Platform'));
+    expect(await screen.findByText('Acme Corp')).toBeInTheDocument();
+    expect(screen.getByLabelText('Conteúdo')).toHaveValue(DEFAULT_CONTENT);
+
     await userEvent.clear(nameInput);
     await userEvent.type(nameInput, 'Renamed');
-    await userEvent.click(screen.getByRole('button', { name: 'Salvar' }));
+    expect(screen.getByRole('button', { name: 'Concluir' })).toBeEnabled();
+    await userEvent.click(screen.getByRole('button', { name: 'Concluir' }));
 
-    expect(await screen.findByText('Workspace atualizado.')).toBeInTheDocument();
+    expect(await screen.findByText('Specs screen')).toBeInTheDocument();
   });
 
-  it('surfaces the platform-locked 409 with an explanatory message', async () => {
+  it('surfaces the platform-locked 409 from Concluir with an explanatory message, without navigating', async () => {
     localStorage.setItem('sdlc-dashboard:workspaceId', String(WORKSPACE.id));
-    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = typeof input === 'string' ? input : input.toString();
-      if (url === `/workspaces/${WORKSPACE.id}` && init?.method === 'PATCH') return jsonResponse(409, { error: 'locked' });
-      if (url === `/workspaces/${WORKSPACE.id}`) return jsonResponse(200, WORKSPACE);
-      if (url === '/workspaces') return jsonResponse(200, [WORKSPACE]);
-      if (url === `/workspaces/${WORKSPACE.id}/credenciais`) return jsonResponse(200, []);
-      throw new Error(`unexpected request: ${url}`);
-    });
-    vi.stubGlobal('fetch', fetchMock);
-    renderPage();
-    await waitFor(async () => expect(await screen.findByLabelText('Nome')).toHaveValue('Acme Platform'));
-
-    await userEvent.click(screen.getByRole('button', { name: 'Salvar' }));
-
-    expect(await screen.findByText('Plataforma e repositório não podem ser alterados depois que o ciclo já começou para este workspace.')).toBeInTheDocument();
-  });
-
-  it('the workspace section is a collapsible accordion, open by default, showing the name once collapsed', async () => {
-    localStorage.setItem('sdlc-dashboard:workspaceId', String(WORKSPACE.id));
-    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
-      const url = typeof input === 'string' ? input : input.toString();
-      if (url === `/workspaces/${WORKSPACE.id}`) return jsonResponse(200, WORKSPACE);
-      if (url === '/workspaces') return jsonResponse(200, [WORKSPACE]);
-      if (url === `/workspaces/${WORKSPACE.id}/credenciais`) return jsonResponse(200, []);
-      throw new Error(`unexpected request: ${url}`);
-    });
-    vi.stubGlobal('fetch', fetchMock);
-    renderPage();
-    await waitFor(async () => expect(await screen.findByLabelText('Nome')).toHaveValue('Acme Platform'));
-
-    const summary = screen.getByText('Acme Platform', { selector: 'summary' });
-    await userEvent.click(summary);
-
-    // jsdom keeps a closed <details>'s children in the DOM (it doesn't run layout/CSS), so
-    // "collapsed" here means not visible, not absent - toBeInTheDocument would pass either way.
-    expect(screen.getByLabelText('Nome')).not.toBeVisible();
-    expect(screen.getByText('Acme Platform', { selector: 'summary' })).toBeVisible(); // the summary itself, still visible collapsed
-
-    await userEvent.click(summary);
-    expect(await screen.findByLabelText('Nome')).toHaveValue('Acme Platform');
-  });
-});
-
-describe('WorkspacePage - Assessment section', () => {
-  beforeEach(() => {
-    localStorage.clear();
-    localStorage.setItem('sdlc-dashboard:workspaceId', String(WORKSPACE.id));
-  });
-
-  function withWorkspaceHandlers(extra: (url: string, init?: RequestInit) => Response | Promise<Response> | undefined) {
-    return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = typeof input === 'string' ? input : input.toString();
-      if (url === `/workspaces/${WORKSPACE.id}`) return jsonResponse(200, WORKSPACE);
-      if (url === '/workspaces') return jsonResponse(200, [WORKSPACE]);
-      if (url === `/workspaces/${WORKSPACE.id}/credenciais`) return jsonResponse(200, []);
-      const result = await extra(url, init);
-      if (result) return result;
-      throw new Error(`unexpected request: ${url}`);
-    });
-  }
-
-  it('searches clients as the operator types and lets them pick an existing one', async () => {
     const fetchMock = withWorkspaceHandlers((url, init) => {
-      if (url.startsWith('/clients?q=')) return jsonResponse(200, [{ id: 1, name: 'Acme Corp' }]);
-      if (url === `/workspaces/${WORKSPACE.id}/assessments` && init?.method === 'POST') {
-        const body = JSON.parse(init.body as string);
-        expect(body).toEqual({ client_id: 1 });
-        return jsonResponse(200, { id: 42, workspaceId: WORKSPACE.id, clientId: 1, content: DEFAULT_CONTENT, status: 'em_andamento' });
+      if (url === `/workspaces/${WORKSPACE.id}` && init?.method === 'PATCH') return jsonResponse(409, { error: 'locked' });
+      if (url === `/workspaces/${WORKSPACE.id}/assessments/current`) {
+        return jsonResponse(200, { id: 42, workspaceId: WORKSPACE.id, clientId: 1, clientName: 'Acme Corp', content: DEFAULT_CONTENT, status: 'em_andamento' });
       }
       return undefined;
     });
     vi.stubGlobal('fetch', fetchMock);
+    renderPage();
+    await waitFor(async () => expect(await screen.findByLabelText('Nome')).toHaveValue('Acme Platform'));
 
+    await userEvent.click(screen.getByRole('button', { name: 'Concluir' }));
+
+    expect(await screen.findByText('Plataforma e repositório não podem ser alterados depois que o ciclo já começou para este workspace.')).toBeInTheDocument();
+    expect(screen.queryByText('Specs screen')).not.toBeInTheDocument();
+  });
+
+  it('the workspace section is a collapsible accordion, open by default, showing the name once collapsed', async () => {
+    localStorage.setItem('sdlc-dashboard:workspaceId', String(WORKSPACE.id));
+    const fetchMock = withWorkspaceHandlers(() => undefined);
+    vi.stubGlobal('fetch', fetchMock);
+    renderPage();
+    await waitFor(async () => expect(await screen.findByLabelText('Nome')).toHaveValue('Acme Platform'));
+
+    const summaryTitle = screen.getByText('Acme Platform', { selector: 'summary span' });
+    await userEvent.click(summaryTitle);
+
+    // jsdom keeps a closed <details>'s children in the DOM (it doesn't run layout/CSS), so
+    // "collapsed" here means not visible, not absent - toBeInTheDocument would pass either way.
+    expect(screen.getByLabelText('Nome')).not.toBeVisible();
+    expect(summaryTitle).toBeVisible(); // the summary itself, still visible collapsed
+    expect(screen.getByRole('button', { name: 'Concluir' })).toBeVisible(); // Concluir lives in the summary bar too
+
+    await userEvent.click(summaryTitle);
+    expect(await screen.findByLabelText('Nome')).toHaveValue('Acme Platform');
+  });
+
+  it('searches clients as the operator types and lets them pick an existing one', async () => {
+    localStorage.setItem('sdlc-dashboard:workspaceId', String(WORKSPACE.id));
+    const fetchMock = withWorkspaceHandlers((url) => {
+      if (url.startsWith('/clients?q=')) return jsonResponse(200, [{ id: 1, name: 'Acme Corp' }]);
+      return undefined;
+    });
+    vi.stubGlobal('fetch', fetchMock);
     renderPage();
     await userEvent.type(await screen.findByLabelText('Cliente'), 'Acme');
 
     const match = await screen.findByRole('button', { name: 'Acme Corp' });
     await userEvent.click(match);
 
-    expect(await screen.findByLabelText('Conteúdo')).toHaveValue(DEFAULT_CONTENT);
+    expect(await screen.findByText('Acme Corp')).toBeInTheDocument();
+    expect(screen.queryByLabelText('Cliente')).not.toBeInTheDocument();
   });
 
   it('offers to create a new client when the typed name has no exact match', async () => {
-    const fetchMock = withWorkspaceHandlers((url, init) => {
+    localStorage.setItem('sdlc-dashboard:workspaceId', String(WORKSPACE.id));
+    const fetchMock = withWorkspaceHandlers((url) => {
       if (url.startsWith('/clients?q=')) return jsonResponse(200, []);
-      if (url === `/workspaces/${WORKSPACE.id}/assessments` && init?.method === 'POST') {
-        const body = JSON.parse(init.body as string);
-        expect(body).toEqual({ client_name: 'Nova Empresa' });
-        return jsonResponse(200, { id: 43, workspaceId: WORKSPACE.id, clientId: 2, content: DEFAULT_CONTENT, status: 'em_andamento' });
-      }
       return undefined;
     });
     vi.stubGlobal('fetch', fetchMock);
-
     renderPage();
     await userEvent.type(await screen.findByLabelText('Cliente'), 'Nova Empresa');
 
@@ -204,74 +218,58 @@ describe('WorkspacePage - Assessment section', () => {
     expect(await screen.findByText('Nova Empresa')).toBeInTheDocument();
   });
 
-  async function selectExistingClientAndLoadAssessment() {
+  it('"trocar" returns to the client search', async () => {
+    localStorage.setItem('sdlc-dashboard:workspaceId', String(WORKSPACE.id));
+    const fetchMock = withWorkspaceHandlers((url) => {
+      if (url.startsWith('/clients?q=')) return jsonResponse(200, [{ id: 1, name: 'Acme Corp' }]);
+      return undefined;
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    renderPage();
     await userEvent.type(await screen.findByLabelText('Cliente'), 'Acme');
     await userEvent.click(await screen.findByRole('button', { name: 'Acme Corp' }));
-    await screen.findByLabelText('Conteúdo');
-  }
-
-  it('shows a success message when Concluir succeeds, without calling any Hermes profile', async () => {
-    const fetchMock = withWorkspaceHandlers((url, init) => {
-      if (url.startsWith('/clients?q=')) return jsonResponse(200, [{ id: 1, name: 'Acme Corp' }]);
-      if (url === `/workspaces/${WORKSPACE.id}/assessments` && init?.method === 'POST') return jsonResponse(200, { id: 42, workspaceId: WORKSPACE.id, clientId: 1, content: DEFAULT_CONTENT, status: 'em_andamento' });
-      if (url === `/workspaces/${WORKSPACE.id}/assessments/42/concluir`) return jsonResponse(200, { concluido: true });
-      return undefined;
-    });
-    vi.stubGlobal('fetch', fetchMock);
-    renderPage();
-    await selectExistingClientAndLoadAssessment();
-
-    await userEvent.click(screen.getByRole('button', { name: 'Concluir' }));
-
-    expect(await screen.findByText('Assessment concluído.')).toBeInTheDocument();
-  });
-
-  it('"trocar" returns to the client picker', async () => {
-    const fetchMock = withWorkspaceHandlers((url, init) => {
-      if (url.startsWith('/clients?q=')) return jsonResponse(200, [{ id: 1, name: 'Acme Corp' }]);
-      if (url === `/workspaces/${WORKSPACE.id}/assessments` && init?.method === 'POST') return jsonResponse(200, { id: 42, workspaceId: WORKSPACE.id, clientId: 1, content: DEFAULT_CONTENT, status: 'em_andamento' });
-      return undefined;
-    });
-    vi.stubGlobal('fetch', fetchMock);
-    renderPage();
-    await selectExistingClientAndLoadAssessment();
+    await screen.findByText('Acme Corp');
 
     await userEvent.click(screen.getByRole('button', { name: 'trocar' }));
 
     expect(screen.getByLabelText('Cliente')).toBeInTheDocument();
-    expect(screen.queryByLabelText('Conteúdo')).not.toBeInTheDocument();
   });
 
-  it('resets the loaded assessment when the workspace changes elsewhere in the app', async () => {
-    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+  it('resets the loaded workspace/assessment state when the workspace changes elsewhere in the app', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = typeof input === 'string' ? input : input.toString();
-      if (url.startsWith('/clients?q=')) return jsonResponse(200, [{ id: 1, name: 'Acme Corp' }]);
-      if (url === `/workspaces/${WORKSPACE.id}/assessments` && init?.method === 'POST') return jsonResponse(200, { id: 42, workspaceId: WORKSPACE.id, clientId: 1, content: DEFAULT_CONTENT, status: 'em_andamento' });
       if (url === '/workspaces') return jsonResponse(200, [WORKSPACE, { ...WORKSPACE, id: 8, name: 'Other' }]);
       if (url === `/workspaces/${WORKSPACE.id}`) return jsonResponse(200, WORKSPACE);
+      if (url === `/workspaces/${WORKSPACE.id}/assessments/current`) {
+        return jsonResponse(200, { id: 42, workspaceId: WORKSPACE.id, clientId: 1, clientName: 'Acme Corp', content: DEFAULT_CONTENT, status: 'em_andamento' });
+      }
       if (url === '/workspaces/8') return jsonResponse(200, { ...WORKSPACE, id: 8, name: 'Other' });
+      if (url === '/workspaces/8/assessments/current') return jsonResponse(404, {});
       if (url === '/workspaces/8/credenciais') return jsonResponse(200, []);
       throw new Error(`unexpected request: ${url}`);
     });
     vi.stubGlobal('fetch', fetchMock);
+    localStorage.setItem('sdlc-dashboard:workspaceId', String(WORKSPACE.id));
 
     render(
-      <WorkspaceProvider>
-        <WorkspaceListProvider>
-          <WorkspaceSwitcher to={8} />
-          <WorkspacePage />
-        </WorkspaceListProvider>
-      </WorkspaceProvider>,
+      <MemoryRouter initialEntries={['/workspace']}>
+        <WorkspaceProvider>
+          <WorkspaceListProvider>
+            <WorkspaceSwitcher to={8} />
+            <Routes>
+              <Route path="/workspace" element={<WorkspacePage />} />
+              <Route path="/specs" element={<p>Specs screen</p>} />
+            </Routes>
+          </WorkspaceListProvider>
+        </WorkspaceProvider>
+      </MemoryRouter>,
     );
-    await selectExistingClientAndLoadAssessment();
+    await screen.findByText('Acme Corp');
 
     await userEvent.click(screen.getByRole('button', { name: 'Switch workspace' }));
 
-    expect(await screen.findByLabelText('Cliente')).toBeInTheDocument();
-    expect(screen.queryByLabelText('Conteúdo')).not.toBeInTheDocument();
-
-    const workspace8AssessmentCalls = fetchMock.mock.calls.filter(([input]) => (typeof input === 'string' ? input : input.toString()) === '/workspaces/8/assessments');
-    expect(workspace8AssessmentCalls).toHaveLength(0);
+    await waitFor(() => expect(screen.getByLabelText('Nome')).toHaveValue('Other'));
+    expect(screen.getByLabelText('Cliente')).toBeInTheDocument(); // back to the search field - no client carried over
   });
 });
 
@@ -280,17 +278,6 @@ describe('WorkspacePage - Credenciais section', () => {
     localStorage.clear();
     localStorage.setItem('sdlc-dashboard:workspaceId', String(WORKSPACE.id));
   });
-
-  function withWorkspaceHandlers(extra: (url: string, init?: RequestInit) => Response | Promise<Response> | undefined) {
-    return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = typeof input === 'string' ? input : input.toString();
-      if (url === `/workspaces/${WORKSPACE.id}`) return jsonResponse(200, WORKSPACE);
-      if (url === '/workspaces') return jsonResponse(200, [WORKSPACE]);
-      const result = await extra(url, init);
-      if (result) return result;
-      throw new Error(`unexpected request: ${url}`);
-    });
-  }
 
   it('lists all 7 perfis, marking which ones are cadastrados and which are not', async () => {
     const fetchMock = withWorkspaceHandlers((url) => {
@@ -333,8 +320,6 @@ describe('WorkspacePage - Credenciais section', () => {
     await userEvent.click(within(devRow).getByRole('button', { name: 'Cadastrar' }));
     await userEvent.type(screen.getByLabelText('Usuário na plataforma'), 'recolocarme-web');
     await userEvent.type(screen.getByLabelText('Token'), 'super-secret-token');
-    // Two "Salvar" buttons are on screen at once (this inline form's, and the workspace details form
-    // above it) - scope the click to this row.
     await userEvent.click(within(devRow).getByRole('button', { name: 'Salvar' }));
 
     expect(await screen.findByText('Credencial para Dev cadastrada.')).toBeInTheDocument();

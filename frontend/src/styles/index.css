@@ -146,9 +146,9 @@ textarea {
 }
 
 /* Mobile-first app shell: header stays pinned to the top; the nav starts as a thumb-reachable bottom
-   tabbar and, from the tablet breakpoint up, moves above the content as a top tab strip instead - same
-   single <nav> markup (Layout.tsx), just relaid out via grid-template-areas so there's nothing to
-   duplicate or keep in sync between the two positions. */
+   tabbar and, from the tablet breakpoint up, moves to a left sidebar instead - same single <nav> markup
+   (Layout.tsx), just relaid out via grid-template-areas/columns so there's nothing to duplicate or keep
+   in sync between the two positions. */
 .app-shell {
   display: grid;
   grid-template-areas: 'header' 'content' 'nav';
@@ -158,8 +158,14 @@ textarea {
 
 @media (min-width: 768px) {
   .app-shell {
-    grid-template-areas: 'header' 'nav' 'content';
-    grid-template-rows: auto auto 1fr;
+    grid-template-areas: 'header header' 'nav content';
+    grid-template-columns: 15rem 1fr;
+    grid-template-rows: auto 1fr;
+  }
+
+  /* Recolher o menu principal libera a largura pro conteúdo, não deixa uma coluna vazia. */
+  .app-shell--nav-collapsed {
+    grid-template-columns: 2.75rem 1fr;
   }
 }
 
@@ -213,7 +219,6 @@ textarea {
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
-  max-width: 26rem;
 }
 
 .workspace-details-form label {
@@ -237,14 +242,18 @@ textarea {
 }
 
 /* Collapsible once there's something worth hiding (seção 4) - plain <details>/<summary>, no JS needed
-   for the toggle itself. */
-.workspace-details-accordion {
+   for the toggle itself. .section-accordion is the same pattern promoted to every top-level section on
+   WorkspacePage (Workspace/Assessment/Credenciais), so each region reads as its own clearly delimited
+   block instead of a plain heading followed by loose content. */
+.workspace-details-accordion,
+.section-accordion {
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--surface);
 }
 
-.workspace-details-accordion summary {
+.workspace-details-accordion summary,
+.section-accordion summary {
   cursor: pointer;
   padding: 0.65rem 0.85rem;
   font-weight: 600;
@@ -252,11 +261,35 @@ textarea {
   list-style: none;
 }
 
-.workspace-details-accordion summary::-webkit-details-marker {
+/* The Workspace accordion's summary also carries the always-visible Concluir action (seção 4/5.1/8) -
+   title/marker stay left, the button is pushed to the far right regardless of how long the name is. */
+.workspace-details-accordion summary {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.workspace-details-accordion summary button {
+  margin-left: auto;
+  flex: none;
+}
+
+/* The summary's title is a real heading (h1/h2) for a11y/testability - reset it back to plain summary
+   text styling instead of the serif/oversized look h1-h3 get elsewhere on the page. */
+.section-accordion summary h1,
+.section-accordion summary h2 {
+  display: inline;
+  margin: 0;
+  font: inherit;
+}
+
+.workspace-details-accordion summary::-webkit-details-marker,
+.section-accordion summary::-webkit-details-marker {
   display: none;
 }
 
-.workspace-details-accordion summary::before {
+.workspace-details-accordion summary::before,
+.section-accordion summary::before {
   content: '▸';
   display: inline-block;
   width: 1em;
@@ -265,16 +298,19 @@ textarea {
   transition: transform 0.15s ease;
 }
 
-.workspace-details-accordion[open] summary::before {
+.workspace-details-accordion[open] summary::before,
+.section-accordion[open] summary::before {
   transform: rotate(90deg);
 }
 
-.workspace-details-accordion summary:focus-visible {
+.workspace-details-accordion summary:focus-visible,
+.section-accordion summary:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 
-.workspace-details-accordion-body {
+.workspace-details-accordion-body,
+.section-accordion-body {
   padding: 0.15rem 0.85rem 0.85rem;
   border-top: 1px solid var(--border);
   margin-top: 0.1rem;
@@ -282,6 +318,29 @@ textarea {
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
+}
+
+/* WorkspacePage: each top-level block (page title, the workspace form, Assessment, Credenciais) is its
+   own delimited region (border via .section-accordion above) - this just gives them consistent breathing
+   room from one another down the page. */
+.workspace-page > * + * {
+  margin-top: 1rem;
+}
+
+/* Empty-state placeholder (e.g. SpecsPage's project list) - same bordered/rounded card language as the
+   Workspace tab's accordion sections, so an empty list reads as a clear invitation to act rather than a
+   bare line of text with an unstyled button floating below it. */
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  padding: 1.75rem 1rem;
+  text-align: center;
+  color: var(--text-muted);
 }
 
 /* Field grouping ("campos agrupados em seções mais claras") - a labeled box around related fields, used
@@ -321,16 +380,13 @@ textarea {
 .app-content {
   grid-area: content;
   width: 100%;
-  max-width: 640px;
-  margin: 0 auto;
   padding: 1rem;
   padding-bottom: calc(1rem + env(safe-area-inset-bottom));
 }
 
 @media (min-width: 768px) {
   .app-content {
-    max-width: 880px;
-    padding: 1.5rem;
+    padding: 1.5rem 2rem;
   }
 }
 
@@ -357,25 +413,64 @@ textarea {
   font-weight: 700;
 }
 
+/* Only the desktop sidebar can usefully collapse (mobile's bottom tabbar has nowhere to hide its tabs
+   to) - hidden here, shown again inside the min-width:768px block below. */
+.app-tabbar-toggle {
+  display: none;
+}
+
 @media (min-width: 768px) {
   .app-tabbar {
+    grid-area: nav;
+    flex-direction: column;
+    align-items: stretch;
     border-top: none;
-    border-bottom: 1px solid var(--border);
-    padding-bottom: 0;
-    padding: 0 1.5rem;
+    border-right: 1px solid var(--border);
+    padding: 1rem 0.75rem;
     gap: 0.15rem;
   }
 
   .app-tab {
     flex: none;
-    padding: 0.7rem 0.9rem;
-    border-bottom: 2px solid transparent;
-    margin-bottom: -1px;
+    text-align: left;
+    padding: 0.55rem 0.75rem;
+    border-bottom: none;
+    border-left: 3px solid transparent;
+    border-radius: 6px;
+    margin-bottom: 0;
     font-size: 0.85rem;
   }
 
+  .app-tabbar-toggle {
+    display: inline-flex;
+    align-self: flex-end;
+    align-items: center;
+    justify-content: center;
+    width: 1.75rem;
+    height: 1.75rem;
+    margin-bottom: 0.5rem;
+    padding: 0;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--surface);
+    color: var(--text);
+    font-size: 1rem;
+    line-height: 1;
+    cursor: pointer;
+  }
+
+  .app-tabbar--collapsed {
+    align-items: center;
+  }
+
+  .app-tabbar--collapsed .app-tabbar-toggle {
+    align-self: center;
+  }
+
   .app-tab--active {
-    border-bottom-color: var(--accent);
+    border-bottom-color: transparent;
+    border-left-color: var(--accent);
+    background: var(--accent-wash);
   }
 }
 
@@ -515,42 +610,242 @@ section input[type='text'],
   resize: vertical;
 }
 
-.spec-list {
-  list-style: none;
-  margin: 1rem 0 0;
-  padding: 0;
+/* SpecsPage: segunda barra lateral própria da tela (seção 5.2), separada do nav principal - a árvore
+   fica sempre à vista (ou recolhida a um clique) e a conversa + conteúdo da spec usam toda a largura
+   restante do viewport. Empilha em coluna única abaixo do breakpoint de tablet. */
+.specs-page {
   display: flex;
   flex-direction: column;
-  gap: 0.75rem;
+  gap: 1.5rem;
 }
 
 @media (min-width: 768px) {
-  .spec-list {
+  .specs-page {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    grid-template-columns: 18rem 1fr;
+    align-items: start;
+    gap: 1.5rem;
+  }
+
+  /* Recolher a árvore libera a largura pro conteúdo do chat/spec, não deixa uma coluna vazia. */
+  .specs-page--sidebar-collapsed {
+    grid-template-columns: 2.75rem 1fr;
   }
 }
 
-.spec-list-item {
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 0.85rem;
-  background: var(--surface);
+.specs-sidebar {
+  min-width: 0;
 }
 
-.spec-title {
+@media (min-width: 768px) {
+  .specs-sidebar {
+    position: sticky;
+    top: 1rem;
+    max-height: calc(100svh - 2rem);
+    overflow-y: auto;
+  }
+}
+
+.specs-sidebar h1 {
+  font-size: 1.2rem;
   margin: 0;
-  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
 }
 
-.spec-path {
-  margin: 0.15rem 0 0.6rem;
+.specs-sidebar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.specs-sidebar-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.specs-sidebar-toggle {
+  padding: 0.25rem 0.55rem;
+  font-size: 1rem;
+  line-height: 1;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+/* "+" Novo projeto, alinhado ao lado do título "Specs" (e reaproveitado como o gatilho de criação
+   dentro da árvore quando a lista já tem projetos - mesmo botão, mesmo estilo). */
+.spec-tree-new-project {
+  width: 1.75rem;
+  height: 1.75rem;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 1.1rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.specs-main {
+  min-width: 0;
+}
+
+.specs-main-placeholder {
+  color: var(--text-muted);
+  padding: 2rem 0;
+}
+
+/* Título da sessão de conversa (seção 5.4) - substitui o "Specs" do cabeçalho, que some quando as
+   barras recolhem ao entrar no modo conversa. */
+.specs-breadcrumb {
+  margin: 0;
   font-size: 0.8rem;
+  color: var(--text-muted);
+  letter-spacing: 0.02em;
+}
+
+/* Treeview de specs (seção 5.2): projeto -> specs -> *.md, tudo carregado e exibido de uma vez (escala
+   pequena do piloto) em vez do navegador nível-a-nível de antes. */
+.spec-tree {
+  margin-top: 1rem;
+}
+
+.spec-tree-projects,
+.spec-tree-branch {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.spec-tree-project + .spec-tree-project {
+  margin-top: 1rem;
+}
+
+.spec-tree-branch {
+  padding-left: 1.3rem;
+  border-left: 1px solid var(--border);
+  margin-top: 0.4rem;
+}
+
+.spec-tree-node {
+  margin: 0.35rem 0;
+  font-size: 0.85rem;
   color: var(--text-muted);
 }
 
-.spec-list-item button {
-  padding: 0.5rem 1rem;
+.spec-tree-node--project {
+  font-weight: 600;
+  font-size: 0.95rem;
+  color: var(--text);
+}
+
+.spec-tree-empty {
+  font-style: italic;
+}
+
+.spec-tree-file {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  background: none;
+  border: none;
+  padding: 0.3rem 0;
+  margin: 0.1rem 0;
+  color: var(--text);
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.spec-tree-file:hover {
+  text-decoration: underline;
+}
+
+.spec-tree-file--active {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.spec-tree-file-status {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.spec-tree-file-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.spec-tree-view {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.6rem;
+  height: 1.6rem;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.spec-tree-view:hover {
+  color: var(--text);
+  background: var(--surface-2);
+}
+
+/* Modal genérico (seção 5.2/5.4) - hoje só usado pelo "ver" da árvore, pra mostrar/editar o conteúdo
+   bruto de uma spec sem disputar espaço com a conversa. */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgb(0 0 0 / 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
+  z-index: 100;
+}
+
+.modal-content {
+  position: relative;
+  width: 100%;
+  max-width: 46rem;
+  max-height: calc(100svh - 3rem);
+  overflow-y: auto;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 1.5rem;
+}
+
+.modal-close {
+  position: absolute;
+  top: 0.75rem;
+  right: 0.75rem;
+  width: 2rem;
+  height: 2rem;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 1.2rem;
+  line-height: 1;
+  cursor: pointer;
 }
 
 .phase-counts {
@@ -702,14 +997,38 @@ section input[type='text'],
   margin-top: 0.25rem;
 }
 
-/* Chat box with the "specs" skill (OpenWebUI-style conversation, seção 5.2) - alongside the content
-   editor, never auto-applying its replies to it. */
+/* Antes da primeira mensagem (seção 5.4): só o título, centralizado na tela, sem borda nem caixa - cede
+   lugar às mensagens de verdade (.spec-chat) assim que a conversa começa. */
+.spec-chat-intro {
+  min-height: 45vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding-bottom: 6rem; /* mesmo respiro que .spec-chat dá pro composer fixo abaixo */
+}
+
+.spec-chat-intro h2 {
+  margin: 0;
+  font-size: 1.9rem;
+  max-width: 30rem;
+}
+
+/* Chat box with the "specs" skill (OpenWebUI-style conversation, seção 5.2/5.4) - the sole focus of
+   this page's main region now (the raw editor only opens on demand, in a modal via "ver" on the tree),
+   so it gets the accent border/wash the rest of this page reserves for the primary action. */
 .spec-chat {
   margin-top: 1.5rem;
-  border: 1px solid var(--border);
+  border: 2px solid var(--accent);
   border-radius: 8px;
-  padding: 0.85rem;
-  background: var(--surface);
+  padding: 1rem;
+  /* Deixa espaço pro composer fixo (.spec-chat-form) não cobrir as últimas mensagens. */
+  padding-bottom: 6rem;
+  background: var(--accent-wash);
+}
+
+.spec-chat-error {
+  margin-top: 1rem;
 }
 
 .spec-chat-messages {
@@ -740,15 +1059,30 @@ section input[type='text'],
   background: var(--accent-wash);
 }
 
+/* Composer estilo OpenWebUI/ChatGPT (seção 5.4): fixo no centro-inferior do viewport, não preso ao fluxo
+   do .spec-chat - fica no mesmo lugar mesmo rolando a conversa. .spec-chat ganha padding-bottom pra suas
+   mensagens não ficarem escondidas atrás dele. */
 .spec-chat-form {
+  position: fixed;
+  left: 50%;
+  bottom: 1.5rem;
+  transform: translateX(-50%);
+  width: min(42rem, calc(100vw - 3rem));
+  z-index: 20;
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
 }
 
-.spec-chat-form textarea {
+.spec-chat-input-wrap {
+  position: relative;
+  box-shadow: 0 4px 16px rgb(0 0 0 / 0.12);
+  border-radius: 6px;
+}
+
+.spec-chat-input-wrap textarea {
   width: 100%;
-  padding: 0.5rem 0.65rem;
+  padding: 0.5rem 3rem 0.5rem 0.65rem;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--bg);
@@ -757,6 +1091,32 @@ section input[type='text'],
   resize: vertical;
 }
 
-.spec-chat-form button {
-  align-self: flex-start;
+.spec-chat-send {
+  position: absolute;
+  right: 0.5rem;
+  bottom: 0.5rem;
+  width: 2.1rem;
+  height: 2.1rem;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--accent-contrast);
+  font-size: 1.1rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.spec-chat-send:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+/* Conteúdo bruto da spec (seção 5.2/5.4) - só existe dentro do modal agora, aberto pelo "ver" da
+   árvore; sem accordion, mostra o formulário direto. */
+.spec-editor h2 {
+  margin-top: 0;
 }
