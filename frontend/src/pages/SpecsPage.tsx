@@ -61,6 +61,28 @@ function EyeIcon() {
   );
 }
 
+// Status da spec (texto livre vindo do blockquote "> Status: ...", seção 5.2) - um marcador icônico no
+// lugar do texto por extenso evita que o nome do arquivo quebre linha em specs com status longo (ex:
+// "pronta para revisao"). O texto completo continua acessível via title/aria-label no hover.
+const READY_STATUS_HINTS = ['pronta', 'pronto', 'aprovad', 'implementad', 'concluid', 'producao'];
+
+function SpecStatusIcon({ status }: { status: string }) {
+  const ready = READY_STATUS_HINTS.some((hint) => status.includes(hint));
+  return (
+    <span className={`spec-tree-file-status${ready ? ' spec-tree-file-status--ready' : ''}`} title={status} aria-label={`Status: ${status}`}>
+      {ready ? (
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M20 6 9 17l-5-5" />
+        </svg>
+      ) : (
+        <svg width="8" height="8" viewBox="0 0 8 8" fill="currentColor" aria-hidden="true">
+          <circle cx="4" cy="4" r="4" />
+        </svg>
+      )}
+    </span>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Treeview: projeto -> specs -> *.md - toda a hierarquia de uma vez (escala do piloto é pequena,
 // seção 15), em vez do navegador nível-a-nível de antes. Specs de cada projeto carregam em paralelo,
@@ -237,22 +259,22 @@ const SpecTree = forwardRef<
                       const isSelected = selected?.projeto === projeto && selected.fileName === spec.fileName;
                       return (
                         <li key={spec.fileName} className="spec-tree-file-row">
+                          {/* Clicar no nome abre o conteúdo direto no modal (seção 5.2) - o botão "ver"
+                              separado virou redundante assim que essa passou a ser a única ação útil
+                              pra uma spec já existente na árvore; entrar em modo conversa continua
+                              acontecendo automaticamente ao criar uma spec nova (handleCreateSpec
+                              abaixo chama onSelectSpec), só não é mais alcançável daqui. */}
                           <button
                             type="button"
                             className={`spec-tree-file${isSelected ? ' spec-tree-file--active' : ''}`}
-                            onClick={() => onSelectSpec(projeto, spec.fileName)}
+                            onClick={() => onViewSpec(projeto, spec.fileName)}
                           >
                             {spec.fileName}
-                            {spec.status && <span className="spec-tree-file-status"> · {spec.status}</span>}
                           </button>
-                          <button
-                            type="button"
-                            className="spec-tree-view"
-                            onClick={() => onViewSpec(projeto, spec.fileName)}
-                            aria-label={`Visualizar ${spec.fileName}`}
-                          >
-                            <EyeIcon />
-                          </button>
+                          {/* Coluna própria (não dentro do botão do nome) pra ficar sempre na mesma
+                              posição horizontal entre as linhas, independente do tamanho do nome do
+                              arquivo - ver .spec-tree-file-row abaixo. */}
+                          <span className="spec-tree-file-status-col">{spec.status && <SpecStatusIcon status={spec.status} />}</span>
                         </li>
                       );
                     })}
@@ -339,10 +361,12 @@ function SpecEditor({
   workspaceId,
   projeto,
   fileName,
+  onUpdateInChat,
 }: {
   workspaceId: number;
   projeto: string;
   fileName: string;
+  onUpdateInChat: (projeto: string, fileName: string) => void;
 }) {
   const [content, setContent] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -425,20 +449,48 @@ function SpecEditor({
             <button type="button" onClick={handleSubirUs} disabled={subirUsState === 'submitting' || outcome?.kind === 'success'}>
               {subirUsState === 'submitting' ? 'Enviando...' : outcome?.kind === 'success' ? 'US enviada' : 'Subir US'}
             </button>
+            {/* Volta pra conversa com a skill specs (seção 5.2/5.4) - o backend já manda o conteúdo
+                salvo desta spec como contexto em toda mensagem do chat, então isso funciona como um
+                "continuar de onde parou" em vez de recomeçar do zero. */}
+            <button type="button" onClick={() => onUpdateInChat(projeto, fileName)}>
+              Atualizar spec
+            </button>
           </div>
 
-          {outcome?.kind === 'success' && <p role="status">US criada: #{outcome.externalRef}</p>}
-          {outcome?.kind === 'pendencias' && (
-            <div role="alert">
-              <p>O Analista apontou pendências:</p>
-              <ul>
-                {outcome.pendencias.map((p) => (
-                  <li key={p}>{p}</li>
-                ))}
-              </ul>
+          {outcome?.kind === 'success' && (
+            <div className="subir-us-result subir-us-result--success" role="status">
+              <span className="subir-us-result-icon" aria-hidden="true">
+                ✓
+              </span>
+              <div>
+                <p className="subir-us-result-title">US criada</p>
+                <p className="subir-us-result-detail">#{outcome.externalRef}</p>
+              </div>
             </div>
           )}
-          {outcome?.kind === 'error' && <p role="alert">{outcome.message}</p>}
+          {outcome?.kind === 'pendencias' && (
+            <div className="subir-us-result subir-us-result--pending" role="alert">
+              <span className="subir-us-result-icon" aria-hidden="true">
+                !
+              </span>
+              <div>
+                <p className="subir-us-result-title">O Analista apontou pendências</p>
+                <ul className="subir-us-result-list">
+                  {outcome.pendencias.map((p) => (
+                    <li key={p}>{p}</li>
+                  ))}
+                </ul>
+              </div>
+            </div>
+          )}
+          {outcome?.kind === 'error' && (
+            <div className="subir-us-result subir-us-result--error" role="alert">
+              <span className="subir-us-result-icon" aria-hidden="true">
+                ×
+              </span>
+              <p className="subir-us-result-title">{outcome.message}</p>
+            </div>
+          )}
         </form>
       )}
     </div>
@@ -460,6 +512,16 @@ function Modal({ onClose, children }: { onClose: () => void; children: ReactNode
     return () => document.removeEventListener('keydown', handleKeyDown);
   }, [onClose]);
 
+  // Sem isso, o body por trás do overlay continua rolável (position:fixed não trava scroll de página
+  // sozinho) - com conteúdo de spec longo, sobra um scrollbar "fora" da caixa da modal, por trás dela.
+  useEffect(() => {
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, []);
+
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal-content" onClick={(e) => e.stopPropagation()}>
@@ -473,26 +535,87 @@ function Modal({ onClose, children }: { onClose: () => void; children: ReactNode
 }
 
 // ---------------------------------------------------------------------------
-// Caixa de chat com a skill "specs" hospedada no Hermes (seção 5.2) - conversa livre, nunca escreve no
-// storage sozinha; o operador decide o que aproveitar abrindo o conteúdo pelo botão "ver" na árvore.
+// Caixa de chat com a skill "specs" hospedada no Hermes (seção 5.2) - conversa livre e iterativa; a
+// skill não tem acesso a ferramentas, então quem grava no blob é sempre o backend, nunca ela
+// diretamente. Quando o SOUL decide que a spec está pronta, ele responde com um bloco reconhecido
+// (```spec-final```) que o backend detecta, grava no lugar da spec, e devolve `finalized: true` - o chat
+// então mostra só "Sua spec ficou pronta." + um botão pra abrir o conteúdo salvo, sem exigir
+// copiar/colar manual do operador.
 // ---------------------------------------------------------------------------
 
 interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
+  finalized?: boolean;
 }
 
-function SpecChatBox({ workspaceId, projeto, fileName }: { workspaceId: number; projeto: string; fileName: string }) {
+function SpecChatBox({
+  workspaceId,
+  projeto,
+  fileName,
+  onViewSpec,
+}: {
+  workspaceId: number;
+  projeto: string;
+  fileName: string;
+  onViewSpec: (projeto: string, fileName: string) => void;
+}) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const messagesEndRef = useRef<HTMLLIElement>(null);
+  // Guarda contra respostas de um envio anterior/de outra spec chegando depois de trocar de spec (ver
+  // efeito abaixo) - cada chamada a sendMessages incrementa isso, e o loop de polling abandona assim
+  // que deixar de ser o mais recente.
+  const pollSeq = useRef(0);
 
   useEffect(() => {
     setMessages([]);
     setDraft('');
     setError(null);
+    pollSeq.current += 1;
   }, [workspaceId, projeto, fileName]);
+
+  // Acompanha a conversa como qualquer chat moderno (seção 5.4) - rola pro fim a cada mensagem nova ou
+  // enquanto a skill está "digitando", sem exigir scroll manual do operador.
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ block: 'end' });
+  }, [messages, sending]);
+
+  // POST só enfileira o pedido (o backend responde na hora com um requestId - a chamada de verdade ao
+  // Hermes roda em background) - sem isso, uma resposta rica que passe de ~30s derrubava a conversa com
+  // "Não foi possível falar com a skill" mesmo a skill tendo respondido normalmente, só que tarde demais
+  // pro HttpClient.Timeout síncrono de antes. Polling aqui troca aquele único request longo por vários
+  // curtos, então não há mais timeout no meio do caminho.
+  async function sendMessages(nextMessages: ChatMessage[]) {
+    const seq = ++pollSeq.current;
+    setSending(true);
+    setError(null);
+    const basePath = `/workspaces/${workspaceId}/spec-projects/${encodeURIComponent(projeto)}/specs/${encodeURIComponent(fileName)}/chat`;
+    try {
+      const { requestId } = await api.post<{ requestId: string }>(basePath, { messages: nextMessages });
+      for (;;) {
+        if (seq !== pollSeq.current) return; // a spec mudou enquanto esperava - descarta esta resposta
+        const job = await api.get<{ status: 'pending' | 'done' | 'error'; reply?: string; finalized?: boolean }>(`${basePath}/${requestId}`);
+        if (seq !== pollSeq.current) return;
+        if (job.status === 'pending') {
+          await new Promise((resolve) => setTimeout(resolve, 1500));
+          continue;
+        }
+        if (job.status === 'done') {
+          setMessages((prev) => [...prev, { role: 'assistant', content: job.reply ?? '', finalized: job.finalized === true }]);
+        } else {
+          setError('Não foi possível falar com a skill.');
+        }
+        break;
+      }
+    } catch {
+      if (seq === pollSeq.current) setError('Não foi possível falar com a skill.');
+    } finally {
+      if (seq === pollSeq.current) setSending(false);
+    }
+  }
 
   async function handleSend() {
     const text = draft.trim();
@@ -500,19 +623,13 @@ function SpecChatBox({ workspaceId, projeto, fileName }: { workspaceId: number; 
     const nextMessages: ChatMessage[] = [...messages, { role: 'user', content: text }];
     setMessages(nextMessages);
     setDraft('');
-    setSending(true);
-    setError(null);
-    try {
-      const response = await api.post<{ reply: string }>(
-        `/workspaces/${workspaceId}/spec-projects/${encodeURIComponent(projeto)}/specs/${encodeURIComponent(fileName)}/chat`,
-        { messages: nextMessages },
-      );
-      setMessages((prev) => [...prev, { role: 'assistant', content: response.reply }]);
-    } catch {
-      setError('Não foi possível falar com a skill. Tente novamente.');
-    } finally {
-      setSending(false);
-    }
+    await sendMessages(nextMessages);
+  }
+
+  // O pedido do operador já está em `messages` (a última mensagem, de role "user") - reenvia o mesmo
+  // histórico sem duplicá-la.
+  function handleRetry() {
+    void sendMessages(messages);
   }
 
   // Mesmo comportamento da caixa de conversa do OpenWebUI (seção 5.4): Enter envia, Shift+Enter quebra
@@ -525,7 +642,10 @@ function SpecChatBox({ workspaceId, projeto, fileName }: { workspaceId: number; 
   }
 
   return (
-    <>
+    // Shell em coluna flex (seção 5.4) - mensagens e composer compartilham a mesma largura/centro,
+    // em vez do composer antigo com position:fixed centralizado na viewport inteira (que ficava
+    // desalinhado da coluna de conversa sempre que a barra lateral estava aberta).
+    <div className="spec-chat-shell">
       {/* Só antes da primeira mensagem (seção 5.4) - o título ocupa o centro da tela, sem borda/caixa
           nenhuma; uma vez que a conversa começa, ele cede lugar às mensagens de verdade. */}
       {messages.length === 0 ? (
@@ -537,13 +657,47 @@ function SpecChatBox({ workspaceId, projeto, fileName }: { workspaceId: number; 
           <ul className="spec-chat-messages">
             {messages.map((message, index) => (
               <li key={index} className={`spec-chat-message spec-chat-message--${message.role}`}>
-                <p>{message.content}</p>
+                <span className="spec-chat-message-avatar" aria-hidden="true">
+                  {message.role === 'user' ? 'Vc' : 'Sp'}
+                </span>
+                <div className="spec-chat-message-body">
+                  <span className="spec-chat-message-role">{message.role === 'user' ? 'Você' : 'Specs'}</span>
+                  <p>{message.content}</p>
+                  {message.finalized && (
+                    <button type="button" className="spec-chat-view-final" onClick={() => onViewSpec(projeto, fileName)}>
+                      <EyeIcon /> Visualizar spec
+                    </button>
+                  )}
+                </div>
               </li>
             ))}
+            {sending && (
+              <li className="spec-chat-message spec-chat-message--assistant spec-chat-message--typing">
+                <span className="spec-chat-message-avatar" aria-hidden="true">
+                  Sp
+                </span>
+                <div className="spec-chat-message-body">
+                  <span className="spec-chat-message-role">Specs</span>
+                  <span className="spec-chat-typing" role="status" aria-label="A skill está digitando">
+                    <i />
+                    <i />
+                    <i />
+                  </span>
+                </div>
+              </li>
+            )}
+            <li ref={messagesEndRef} className="spec-chat-messages-end" aria-hidden="true" />
           </ul>
         </div>
       )}
-      {error && <p role="alert" className="spec-chat-error">{error}</p>}
+      {error && (
+        <p role="alert" className="spec-chat-error">
+          {error}{' '}
+          <button type="button" className="link-button" onClick={handleRetry} disabled={sending}>
+            Tente de Novo
+          </button>
+        </p>
+      )}
       <form
         onSubmit={(e) => {
           e.preventDefault();
@@ -573,7 +727,7 @@ function SpecChatBox({ workspaceId, projeto, fileName }: { workspaceId: number; 
           </button>
         </div>
       </form>
-    </>
+    </div>
   );
 }
 
@@ -696,14 +850,27 @@ export function SpecsPage() {
             </p>
             {/* A conversa ocupa toda a região principal agora (seção 5.2/5.4) - o conteúdo bruto só abre
                 sob demanda, no modal acionado pelo botão "ver" na árvore. */}
-            <SpecChatBox workspaceId={workspaceId} projeto={selected.projeto} fileName={selected.fileName} />
+            <SpecChatBox
+              workspaceId={workspaceId}
+              projeto={selected.projeto}
+              fileName={selected.fileName}
+              onViewSpec={(projeto, fileName) => setViewing({ projeto, fileName })}
+            />
           </>
         )}
       </div>
 
       {viewing !== null && (
         <Modal onClose={() => setViewing(null)}>
-          <SpecEditor workspaceId={workspaceId} projeto={viewing.projeto} fileName={viewing.fileName} />
+          <SpecEditor
+            workspaceId={workspaceId}
+            projeto={viewing.projeto}
+            fileName={viewing.fileName}
+            onUpdateInChat={(projeto, fileName) => {
+              setViewing(null);
+              selectSpec(projeto, fileName);
+            }}
+          />
         </Modal>
       )}
     </section>

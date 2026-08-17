@@ -25,6 +25,7 @@ builder.Services.AddSingleton<SessionService>();
 builder.Services.AddSingleton<LoginAttemptService>();
 builder.Services.AddSingleton<Backend.Api.Services.AnalystDorGate>();
 builder.Services.AddSingleton<Backend.Api.Services.PlatformContentClient>();
+builder.Services.AddSingleton<Backend.Api.Services.SpecChatJobStore>();
 builder.Services.AddSingleton<Backend.Api.Services.ISecretStore, Backend.Api.Services.KubernetesSecretStore>();
 if (string.Equals(builder.Configuration["BlobStorage:Provider"], "S3", StringComparison.OrdinalIgnoreCase))
     builder.Services.AddSingleton<Backend.Api.Services.IBlobStore, Backend.Api.Services.S3BlobStore>();
@@ -41,8 +42,11 @@ builder.Services.AddHttpClient("Platform");
 builder.Services.AddHttpClient("Analista", (client, http) => { http.Timeout = TimeSpan.FromSeconds(builder.Configuration.GetValue("Analista:TimeoutSeconds", 30)); }).ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler { AllowAutoRedirect = false });
 // Specs:ApiServerBaseUrl is a separate Hermes skill/profile from Analista (SpecProjectEndpoints.Chat is
 // free-form conversation, not the DoR gate) - same api_server HTTP mechanism, its own deployment-controlled
-// base URL/host/key, never accepted from HTTP input either.
-builder.Services.AddHttpClient("Specs", (client, http) => { http.Timeout = TimeSpan.FromSeconds(builder.Configuration.GetValue("Specs:TimeoutSeconds", 30)); }).ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler { AllowAutoRedirect = false });
+// base URL/host/key, never accepted from HTTP input either. The call itself now runs in a background Task
+// (SpecChatJobStore) instead of blocking the browser-facing POST /chat request, so a generous default
+// (120s vs. Analista's 30s) no longer risks tying up a browser-facing request for that long - it only
+// bounds how long a background job can run before being treated as failed.
+builder.Services.AddHttpClient("Specs", (client, http) => { http.Timeout = TimeSpan.FromSeconds(builder.Configuration.GetValue("Specs:TimeoutSeconds", 120)); }).ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler { AllowAutoRedirect = false });
 builder.Services.AddDbContext<AppDbContext>(o => o.UseSqlite(builder.Configuration.GetConnectionString("Default") ?? $"Data Source={builder.Configuration["DatabasePath"] ?? "workspace.db"}"));
 // Security review on PR #15: /webhooks/* is public and unauthenticated-until-HMAC-checked, so besides
 // the per-request body size cap it also needs a cap on request *volume* per source, or a caller without

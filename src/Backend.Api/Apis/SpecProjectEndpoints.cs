@@ -32,6 +32,7 @@ public static class SpecProjectEndpoints
         app.MapPut("/workspaces/{id:long}/spec-projects/{projeto}/specs/{fileName}", PutSpec);
         app.MapPost("/workspaces/{id:long}/spec-projects/{projeto}/specs/{fileName}/subir-us", SubirUs);
         app.MapPost("/workspaces/{id:long}/spec-projects/{projeto}/specs/{fileName}/chat", Chat);
+        app.MapGet("/workspaces/{id:long}/spec-projects/{projeto}/specs/{fileName}/chat/{requestId}", GetChatJob);
         return app;
     }
 
@@ -166,7 +167,15 @@ public static class SpecProjectEndpoints
     // duplicated from there rather than shared, for the same reason AzureBlobStore/S3BlobStore don't
     // share a base class: two small, independently-reviewable checks beat one shared abstraction that
     // both a spec-chat bug and an Analista-gate bug could each separately compromise.
-    private static async Task<IResult> Chat(long id, string projeto, string fileName, ChatRequest? request, AppDbContext db, IBlobStore blobs, IHttpClientFactory clients, IConfiguration configuration, ILoggerFactory loggerFactory, CancellationToken ct)
+    //
+    // Async by design (não síncrono como o resto desta classe): uma resposta rica da skill pode levar
+    // bem mais que o antigo timeout de 30s do HttpClient.Timeout (que era literalmente o tempo que o
+    // browser ficava esperando essa própria requisição). Em vez de o operador ver "Não foi possível
+    // falar com a skill" toda vez que a resposta demora, o POST só valida tudo (rápido: config, sessão,
+    // workspace, blob) e devolve 202 com um requestId - a chamada de verdade ao api_server roda em
+    // background (RunChatJobAsync) fora do ciclo de vida desta requisição, e o frontend faz polling em
+    // GetChatJob até o job sair de "pending".
+    private static async Task<IResult> Chat(long id, string projeto, string fileName, ChatRequest? request, AppDbContext db, IBlobStore blobs, IHttpClientFactory clients, IConfiguration configuration, SpecChatJobStore jobStore, ILoggerFactory loggerFactory, CancellationToken ct)
     {
         if (!IsSafeSegment(projeto) || !IsSafeSegment(fileName)) return Results.NotFound();
         if (request?.Messages is null || request.Messages.Count == 0) return Results.UnprocessableEntity(new { errors = new[] { "messages: is required" } });
@@ -187,26 +196,110 @@ public static class SpecProjectEndpoints
             return Results.StatusCode(StatusCodes.Status502BadGateway);
         }
 
+        // Premissas do cliente (linha de negocio, stack, arquitetura, constraints de seguranca - seção
+        // 5.1) entram como uma mensagem de sistema antes do histórico da conversa, pro SOUL da skill
+        // poder fundamentar sugestões no contexto real do workspace em vez de assumir tecnologias/
+        // restrições genéricas. Sem assessment concluído (workspace legado ou ainda incompleto), o chat
+        // segue sem esse contexto - a skill não deve travar por causa disso.
+        var assessment = await db.Assessments.AsNoTracking()
+            .Where(a => a.WorkspaceId == id && a.Status == AssessmentStatus.Concluido)
+            .OrderByDescending(a => a.UpdatedAt)
+            .FirstOrDefaultAsync(ct);
+
+        // Conteúdo atual da spec (se já existir algo salvo, ex: operador clicou "Atualizar spec" no
+        // modal - seção 5.2/5.4) entra como contexto também, senão toda revisão pareceria um pedido pra
+        // começar do zero. Uma spec nova (ainda só o template vazio) não tem nada de útil aqui, mas
+        // incluir mesmo assim não atrapalha - só reduz para "nao revise nada, é so o template".
+        var currentContent = await blobs.ReadAsync(ProjectPrefix(workspace!.ClientId!.Value, projeto) + fileName, ct);
+
+        var messages = new List<object>();
+        if (assessment is not null)
+        {
+            messages.Add(new
+            {
+                role = "system",
+                content = "Premissas do assessment deste workspace (linha de negocio do cliente, stack, "
+                    + "arquiteturas presentes, constraints de seguranca) - use como contexto para suas "
+                    + "sugestoes, sem repetir o texto de volta sem necessidade:\n\n" + assessment.Content,
+            });
+        }
+        if (!string.IsNullOrWhiteSpace(currentContent))
+        {
+            messages.Add(new
+            {
+                role = "system",
+                content = "Conteudo atual salvo desta spec (o operador pode estar revisando/continuando "
+                    + "algo ja existente, nao necessariamente comecando do zero) - use como ponto de "
+                    + "partida quando fizer sentido:\n\n" + currentContent,
+            });
+        }
+        messages.AddRange(request.Messages.Select(m => (object)new { role = m.Role, content = m.Content }));
+
+        var key = configuration["Specs:ApiServerApiKey"];
+        var blobPath = ProjectPrefix(workspace!.ClientId!.Value, projeto) + fileName;
+        var httpClient = clients.CreateClient("Specs");
+        var jobId = jobStore.Create();
+
+        // CancellationToken.None de propósito: `ct` morre quando esta resposta 202 termina, mas o
+        // trabalho de verdade só começa depois disso - precisa sobreviver ao fim do request.
+        _ = RunChatJobAsync(jobId, baseUrl!, key, messages, httpClient, blobs, blobPath, jobStore, logger);
+
+        return Results.Json(new { requestId = jobId }, statusCode: StatusCodes.Status202Accepted);
+    }
+
+    private static async Task RunChatJobAsync(string jobId, string baseUrl, string? key, List<object> messages, HttpClient httpClient, IBlobStore blobs, string blobPath, SpecChatJobStore jobStore, ILogger logger)
+    {
         try
         {
-            using var req = new HttpRequestMessage(HttpMethod.Post, new Uri(new Uri(baseUrl!.TrimEnd('/') + "/"), "v1/chat/completions"))
+            using var req = new HttpRequestMessage(HttpMethod.Post, new Uri(new Uri(baseUrl.TrimEnd('/') + "/"), "v1/chat/completions"))
             {
-                Content = JsonContent.Create(new { model = "specs", messages = request.Messages.Select(m => new { role = m.Role, content = m.Content }) })
+                Content = JsonContent.Create(new { model = "specs", messages })
             };
-            var key = configuration["Specs:ApiServerApiKey"];
             if (!string.IsNullOrWhiteSpace(key)) req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", key);
 
-            using var response = await clients.CreateClient("Specs").SendAsync(req, ct);
+            using var response = await httpClient.SendAsync(req, CancellationToken.None);
             response.EnsureSuccessStatusCode();
-            using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
+            using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync(CancellationToken.None));
             var reply = doc.RootElement.GetProperty("choices")[0].GetProperty("message").GetProperty("content").GetString();
-            return reply is null ? Results.StatusCode(StatusCodes.Status502BadGateway) : Results.Ok(new { reply });
+            if (reply is null) { jobStore.Fail(jobId); return; }
+
+            // Iteração termina quando o SOUL decide que a spec está pronta e responde com o bloco
+            // ```spec-final ... ``` (mesmo padrão de "resposta estruturada reconhecida pelo backend" já
+            // usado pro dor_atendido/pendencias do Analista) - a partir daí o backend grava no blob em
+            // nome da skill (que não tem acesso a ferramentas) e o operador só vê "spec pronta" + o botão
+            // de visualizar, sem precisar copiar/colar nada.
+            var finalMatch = Regex.Match(reply, @"```spec-final\s*\r?\n(.*?)```", RegexOptions.Singleline);
+            if (finalMatch.Success)
+            {
+                var finalContent = finalMatch.Groups[1].Value.Trim();
+                if (finalContent.Length > 0)
+                {
+                    await blobs.WriteAsync(blobPath, finalContent, CancellationToken.None);
+                    jobStore.Complete(jobId, "Sua spec ficou pronta.", finalized: true);
+                    return;
+                }
+            }
+
+            jobStore.Complete(jobId, reply, finalized: false);
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException or KeyNotFoundException or UriFormatException)
         {
             logger.LogWarning(ex, "Specs skill chat failed");
-            return Results.StatusCode(StatusCodes.Status502BadGateway);
+            jobStore.Fail(jobId);
         }
+    }
+
+    private static IResult GetChatJob(long id, string projeto, string fileName, string requestId, SpecChatJobStore jobStore)
+    {
+        if (!IsSafeSegment(projeto) || !IsSafeSegment(fileName)) return Results.NotFound();
+        var job = jobStore.Get(requestId);
+        if (job is null) return Results.NotFound();
+        return job.Status switch
+        {
+            SpecChatJobStatus.Done => Results.Ok(new { status = "done", reply = job.Reply, finalized = job.Finalized }),
+            SpecChatJobStatus.Error => Results.Ok(new { status = "error" }),
+            _ => Results.Ok(new { status = "pending" }),
+        };
     }
 }
 
