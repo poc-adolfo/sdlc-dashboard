@@ -63,6 +63,13 @@ public static class AuthEndpoints
             return Results.Ok();
         }).WithName("Logout");
 
+        // SessionMiddleware already validates the cookie and stashes the username in
+        // HttpContext.Items on every authenticated request (seção 11) - this just surfaces it to the
+        // frontend, which otherwise has no way to know who's logged in (the cookie itself is HttpOnly).
+        // Doubles as the session probe AuthContext used to run against GET /clients?q= - same
+        // authenticated-or-401 semantics, but purpose-built instead of borrowed.
+        app.MapGet("/auth/me", (HttpContext http) => Results.Ok(new { username = (string)http.Items["authenticated_user"]! })).WithName("Me");
+
         return app;
     }
 

@@ -5,6 +5,8 @@ type AuthStatus = 'checking' | 'authenticated' | 'anonymous' | 'error';
 
 interface AuthContextValue {
   status: AuthStatus;
+  // Nome do operador logado (seção 11) - null em qualquer status que não seja 'authenticated'.
+  username: string | null;
   login: (username: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
   // Re-runs the session probe - the only way out of 'error' short of a page reload.
@@ -13,10 +15,8 @@ interface AuthContextValue {
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
-// There is no dedicated "whoami" endpoint (seção 14 of the spec doesn't define one - the session
-// cookie is HttpOnly, so the frontend can't just read it either). GET /clients?q= is the cheapest
-// authenticated read in the API contract - used here purely as a session probe on first load, not for
-// its actual search behavior.
+// GET /auth/me (seção 11) doubles as session probe and "who's logged in" - the cookie itself is
+// HttpOnly, so this is the only way the frontend finds out.
 //
 // Only a confirmed 401 means "anonymous". Any other failure (network error, timeout, 5xx) is a
 // transient/infrastructure problem, not proof the operator isn't logged in - Revisor review on PR #20
@@ -24,18 +24,19 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 // protected routes render without ever validating the session. Reporting those as 'error' instead
 // keeps the two failure modes distinct: ProtectedRoute shows a retry state for 'error', and only
 // redirects to /login for a real 'anonymous'.
-async function probeSession(): Promise<'authenticated' | 'anonymous' | 'error'> {
+async function probeSession(): Promise<{ status: 'authenticated'; username: string } | { status: 'anonymous' | 'error' }> {
   try {
-    await api.get('/clients?q=');
-    return 'authenticated';
+    const { username } = await api.get<{ username: string }>('/auth/me');
+    return { status: 'authenticated', username };
   } catch (error) {
-    if (error instanceof UnauthorizedError) return 'anonymous';
-    return 'error';
+    if (error instanceof UnauthorizedError) return { status: 'anonymous' };
+    return { status: 'error' };
   }
 }
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<AuthStatus>('checking');
+  const [username, setUsername] = useState<string | null>(null);
   const mountedRef = useRef(true);
   useEffect(() => {
     mountedRef.current = true;
@@ -47,7 +48,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const checkSession = useCallback(async () => {
     setStatus('checking');
     const result = await probeSession();
-    if (mountedRef.current) setStatus(result);
+    if (!mountedRef.current) return;
+    setStatus(result.status);
+    setUsername(result.status === 'authenticated' ? result.username : null);
   }, []);
 
   useEffect(() => {
@@ -59,7 +62,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // to fail, and shows that request's own generic error instead of sending the operator back to login.
   useEffect(() => {
     setUnauthorizedHandler(() => {
-      if (mountedRef.current) setStatus('anonymous');
+      if (mountedRef.current) {
+        setStatus('anonymous');
+        setUsername(null);
+      }
     });
     return () => setUnauthorizedHandler(null);
   }, []);
@@ -67,6 +73,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const login = useCallback(async (username: string, password: string) => {
     await api.post('/auth/login', { username, password });
     setStatus('authenticated');
+    setUsername(username);
   }, []);
 
   const logout = useCallback(async () => {
@@ -82,10 +89,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // ignored - see above
     } finally {
       setStatus('anonymous');
+      setUsername(null);
     }
   }, []);
 
-  const value = useMemo(() => ({ status, login, logout, retry: checkSession }), [status, login, logout, checkSession]);
+  const value = useMemo(() => ({ status, username, login, logout, retry: checkSession }), [status, username, login, logout, checkSession]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

@@ -11,6 +11,7 @@ import {
 } from 'react';
 import { useOutletContext } from 'react-router-dom';
 import { api, ApiError } from '../api/client';
+import { useAuth } from '../auth/AuthContext';
 import { useWorkspace } from '../workspace/WorkspaceContext';
 import type { LayoutContext } from '../components/Layout';
 
@@ -560,6 +561,10 @@ function SpecChatBox({
   fileName: string;
   onViewSpec: (projeto: string, fileName: string) => void;
 }) {
+  // Rótulos dos balões (seção 5.4): o operador aparece pelo nome de usuário logado em vez de "Você"
+  // genérico, e o outro lado é rotulado "Agente" em vez do nome interno da skill ("specs").
+  const { username } = useAuth();
+  const operatorLabel = username ?? 'Você';
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
@@ -658,10 +663,10 @@ function SpecChatBox({
             {messages.map((message, index) => (
               <li key={index} className={`spec-chat-message spec-chat-message--${message.role}`}>
                 <span className="spec-chat-message-avatar" aria-hidden="true">
-                  {message.role === 'user' ? 'Vc' : 'Sp'}
+                  {message.role === 'user' ? operatorLabel.slice(0, 2).toUpperCase() : 'Ag'}
                 </span>
                 <div className="spec-chat-message-body">
-                  <span className="spec-chat-message-role">{message.role === 'user' ? 'Você' : 'Specs'}</span>
+                  <span className="spec-chat-message-role">{message.role === 'user' ? operatorLabel : 'Agente'}</span>
                   <p>{message.content}</p>
                   {message.finalized && (
                     <button type="button" className="spec-chat-view-final" onClick={() => onViewSpec(projeto, fileName)}>
@@ -674,11 +679,11 @@ function SpecChatBox({
             {sending && (
               <li className="spec-chat-message spec-chat-message--assistant spec-chat-message--typing">
                 <span className="spec-chat-message-avatar" aria-hidden="true">
-                  Sp
+                  Ag
                 </span>
                 <div className="spec-chat-message-body">
-                  <span className="spec-chat-message-role">Specs</span>
-                  <span className="spec-chat-typing" role="status" aria-label="A skill está digitando">
+                  <span className="spec-chat-message-role">Agente</span>
+                  <span className="spec-chat-typing" role="status" aria-label="O agente está digitando">
                     <i />
                     <i />
                     <i />
