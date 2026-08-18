@@ -47,7 +47,7 @@ public sealed class PersistenceTests
         var migrations = context.Database.SqlQueryRaw<string>(
             "SELECT MigrationId AS Value FROM __EFMigrationsHistory ORDER BY MigrationId")
             .ToList();
-        Assert.Equal(new[] { "20260806010204_InitialCreate", "20260808172246_AddActivePerfilCredentialUniqueIndex", "20260808180645_AddPhaseTransitionDeliveryIdDedup", "20260808204544_AddSpecPublication" }, migrations);
+        Assert.Equal(new[] { "20260806010204_InitialCreate", "20260808172246_AddActivePerfilCredentialUniqueIndex", "20260808180645_AddPhaseTransitionDeliveryIdDedup", "20260808204544_AddSpecPublication", "20260818143323_AddUxGate", "20260818152259_AddAssessmentSelectedDesignSystem" }, migrations);
     }
 
     [Fact]

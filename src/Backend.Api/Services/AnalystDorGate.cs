@@ -68,7 +68,14 @@ public sealed class AnalystDorGate(IHttpClientFactory clients, IConfiguration co
                     continue;
                 var vals = p.EnumerateArray().Select(x => x.ValueKind == JsonValueKind.String ? x.GetString()! : null).ToList();
                 if (vals.Any(x => x is null)) return null;
-                return new(a.GetBoolean(), vals!);
+
+                // gate-ux-figma.md seção 3: campos novos, opcionais e tolerantes - a ausência deles (ou
+                // um formato inesperado) nunca invalida o resultado do DoR em si, só deixa a sugestão de
+                // UX como null (a UI simplesmente não mostra o cartão de decisão nesse caso).
+                bool? temTarefasDesign = r.TryGetProperty("tem_tarefas_design", out var td) && td.ValueKind is JsonValueKind.True or JsonValueKind.False ? td.GetBoolean() : null;
+                string? justificativaDesign = r.TryGetProperty("justificativa_design", out var jd) && jd.ValueKind == JsonValueKind.String ? jd.GetString() : null;
+
+                return new(a.GetBoolean(), vals!, temTarefasDesign, justificativaDesign);
             }
             catch (JsonException) { }
         }
@@ -76,4 +83,4 @@ public sealed class AnalystDorGate(IHttpClientFactory clients, IConfiguration co
     }
 }
 
-public sealed record DorResult(bool Attended, IReadOnlyList<string> Pending);
+public sealed record DorResult(bool Attended, IReadOnlyList<string> Pending, bool? TemTarefasDesign = null, string? JustificativaDesign = null);

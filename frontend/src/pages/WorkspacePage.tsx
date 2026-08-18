@@ -26,12 +26,21 @@ interface ClientOption {
   name: string;
 }
 
+// Mesmo texto de AssessmentEndpoints.DefaultContent (seção 5.1) - o backend só aplica esse fallback
+// quando `content` chega null, mas esta tela sempre manda uma string (mesmo vazia), então esse
+// fallback nunca disparava de verdade; o template precisa aparecer aqui, do lado do cliente, sempre
+// que ainda não existe nenhum assessment salvo para o workspace.
+const DEFAULT_ASSESSMENT_CONTENT =
+  '## Linha de negocio do cliente\n\n\n## Stack utilizada\n\n\n## Arquiteturas presentes\n\n\n## Constraints de seguranca\n\n\n## Observacoes adicionais\n';
+
 interface Assessment {
   id: number;
   workspaceId: number;
   clientId: number;
   clientName: string;
   content: string;
+  figmaProjectUrl: string | null;
+  selectedDesignSystemProposalId: number | null;
   status: 'em_andamento' | 'concluido';
 }
 
@@ -60,6 +69,8 @@ function WorkspaceSection({
   const clientSearchSeq = useRef(0);
 
   const [content, setContent] = useState('');
+  const [figmaProjectUrl, setFigmaProjectUrl] = useState('');
+  const [selectedDesignSystemName, setSelectedDesignSystemName] = useState<string | null>(null);
 
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -85,7 +96,9 @@ function WorkspaceSection({
       setPlatformRef('');
       setSelectedClient(null);
       setClientQuery('');
-      setContent('');
+      setContent(DEFAULT_ASSESSMENT_CONTENT);
+      setFigmaProjectUrl('');
+      setSelectedDesignSystemName(null);
       return;
     }
     const seq = ++loadSeq.current;
@@ -109,9 +122,27 @@ function WorkspaceSection({
         if (assessment) {
           setSelectedClient({ kind: 'existing', id: assessment.clientId, name: assessment.clientName });
           setContent(assessment.content);
+          setFigmaProjectUrl(assessment.figmaProjectUrl ?? '');
+          if (assessment.selectedDesignSystemProposalId !== null) {
+            const proposalId = assessment.selectedDesignSystemProposalId;
+            api.get<{ id: number; nome: string }[]>(`/workspaces/${workspaceId}/design-system/proposals`).then(
+              (proposals) => {
+                if (seq !== loadSeq.current) return;
+                setSelectedDesignSystemName(proposals.find((p) => p.id === proposalId)?.nome ?? null);
+              },
+              () => {
+                if (seq !== loadSeq.current) return;
+                setSelectedDesignSystemName(null);
+              },
+            );
+          } else {
+            setSelectedDesignSystemName(null);
+          }
         } else {
           setSelectedClient(null);
-          setContent('');
+          setContent(DEFAULT_ASSESSMENT_CONTENT);
+          setFigmaProjectUrl('');
+          setSelectedDesignSystemName(null);
         }
         setClientQuery('');
         setLoading(false);
@@ -192,7 +223,11 @@ function WorkspaceSection({
       await refreshWorkspaceList();
 
       const clientBody = selectedClient!.kind === 'existing' ? { client_id: selectedClient.id } : { client_name: selectedClient!.name };
-      const assessment = await api.post<Assessment>(`/workspaces/${id}/assessments`, { ...clientBody, content });
+      const assessment = await api.post<Assessment>(`/workspaces/${id}/assessments`, {
+        ...clientBody,
+        content,
+        figma_project_url: figmaProjectUrl.trim().length > 0 ? figmaProjectUrl.trim() : undefined,
+      });
       await api.post<{ concluido: true }>(`/workspaces/${id}/assessments/${assessment.id}/concluir`);
       navigate('/specs');
     } catch (err) {
@@ -312,6 +347,22 @@ function WorkspaceSection({
             <span className="field-group-label">Assessment</span>
             <label htmlFor="assessment-content">Conteúdo</label>
             <textarea id="assessment-content" value={content} onChange={(e) => setContent(e.target.value)} rows={16} disabled={submitting} />
+
+            <label htmlFor="assessment-figma-url">Projeto no Figma (opcional)</label>
+            <input
+              id="assessment-figma-url"
+              type="url"
+              value={figmaProjectUrl}
+              onChange={(e) => setFigmaProjectUrl(e.target.value)}
+              placeholder="https://www.figma.com/files/..."
+              disabled={submitting}
+            />
+
+            {selectedDesignSystemName && (
+              <p className="assessment-design-system-selected">
+                Design system selecionado: <strong>{selectedDesignSystemName}</strong>
+              </p>
+            )}
           </div>
 
           {error && <p role="alert">{error}</p>}
@@ -531,6 +582,138 @@ function CredentialsSection({ workspaceId }: { workspaceId: number }) {
 }
 
 // ---------------------------------------------------------------------------
+// 3. Design System - gate-ux-figma.md seção 4.2: trigger independente do gate por-spec, a partir do
+//    assessment. Gera 3 alternativas (perfil Hermes `ux`), o operador seleciona uma ou pede pra renovar.
+// ---------------------------------------------------------------------------
+
+interface DesignSystemProposal {
+  id: number;
+  nome: string;
+  paleta: string[];
+  tipografia: string;
+  estilo: string;
+  justificativa: string;
+  selecionado: boolean;
+}
+
+type ExploreJobStatus = { status: 'done'; proposals: DesignSystemProposal[] } | { status: 'error' } | { status: 'pending' };
+
+function DesignSystemSection({ workspaceId }: { workspaceId: number }) {
+  const [proposals, setProposals] = useState<DesignSystemProposal[] | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [exploring, setExploring] = useState(false);
+  const [exploreError, setExploreError] = useState<string | null>(null);
+  const pollSeq = useRef(0);
+
+  const load = useCallback(async () => {
+    try {
+      const data = await api.get<DesignSystemProposal[]>(`/workspaces/${workspaceId}/design-system/proposals`);
+      setProposals(data);
+      setLoadError(null);
+    } catch {
+      setLoadError('Não foi possível carregar as propostas de design system.');
+    }
+  }, [workspaceId]);
+
+  useEffect(() => {
+    setProposals(null);
+    setLoadError(null);
+    load();
+  }, [load]);
+
+  async function handleExplore() {
+    setExploring(true);
+    setExploreError(null);
+    const seq = ++pollSeq.current;
+    try {
+      const { requestId } = await api.post<{ requestId: string }>(`/workspaces/${workspaceId}/design-system/explore`, {});
+      while (true) {
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+        if (seq !== pollSeq.current) return;
+        const job = await api.get<ExploreJobStatus>(`/workspaces/${workspaceId}/design-system/explore/${requestId}`);
+        if (job.status === 'done') {
+          if (seq !== pollSeq.current) return;
+          await load();
+          setExploring(false);
+          return;
+        }
+        if (job.status === 'error') {
+          if (seq !== pollSeq.current) return;
+          setExploreError('Não foi possível gerar as alternativas de design system.');
+          setExploring(false);
+          return;
+        }
+      }
+    } catch {
+      if (seq !== pollSeq.current) return;
+      setExploreError('Não foi possível gerar as alternativas de design system.');
+      setExploring(false);
+    }
+  }
+
+  async function handleSelect(proposalId: number) {
+    try {
+      await api.post<DesignSystemProposal>(`/workspaces/${workspaceId}/design-system/proposals/${proposalId}/select`, {});
+      await load();
+    } catch {
+      setLoadError('Não foi possível selecionar essa alternativa. Tente novamente.');
+    }
+  }
+
+  const all = proposals ?? [];
+  const selected = all.find((p) => p.selecionado) ?? null;
+
+  return (
+    <div className="design-system-section">
+      {loadError && <p role="alert">{loadError}</p>}
+      {selected && (
+        <p className="design-system-selected">
+          Selecionado: <strong>{selected.nome}</strong>
+        </p>
+      )}
+
+      <button type="button" className="btn-primary" onClick={handleExplore} disabled={exploring}>
+        {exploring ? 'Gerando...' : all.length > 0 ? 'Gerar novamente' : 'Explorar design system'}
+      </button>
+      {exploreError && <p role="alert">{exploreError}</p>}
+
+      {/* Todas as alternativas (selecionada incluída) ficam sempre visíveis na mesma lista - trocar a
+          seleção só troca qual card tem o selo "Selecionada", nenhum card aparece/desaparece da lista.
+          Antes disso, trocar a seleção fazia a alternativa antes selecionada "reaparecer" no lugar da
+          nova, o que parecia (incorretamente) uma geração nova. */}
+      {all.length > 0 && (
+        <ul className="design-system-options">
+          {all.map((p) => (
+            <li key={p.id} className={`design-system-option-card${p.selecionado ? ' design-system-option-card--selected' : ''}`}>
+              <h3>{p.nome}</h3>
+              <div className="design-system-palette">
+                {p.paleta.map((cor, i) => (
+                  <span key={i} className="design-system-swatch" style={{ backgroundColor: cor }} title={cor} />
+                ))}
+              </div>
+              <p>
+                <strong>Tipografia:</strong> {p.tipografia}
+              </p>
+              <p>
+                <strong>Estilo:</strong> {p.estilo}
+              </p>
+              <p className="design-system-justificativa">{p.justificativa}</p>
+              {p.selecionado ? (
+                <span className="design-system-option-badge">✓ Selecionada</span>
+              ) : (
+                <button type="button" onClick={() => handleSelect(p.id)}>
+                  Selecionar
+                </button>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // 4. SectionAccordion - the same collapsible pattern WorkspaceDetailsSection already used for its own
 //    "Novo workspace"/name box, promoted to every top-level region of this page (Assessment, Credenciais)
 //    so each one reads as its own clearly delimited block instead of a heading followed by loose content.
@@ -562,6 +745,12 @@ export function WorkspacePage() {
       <h1>Workspace</h1>
 
       <WorkspaceSection workspaceId={workspaceId} onWorkspaceCreated={handleWorkspaceCreated} />
+
+      {workspaceId !== null && (
+        <SectionAccordion title="Design System">
+          <DesignSystemSection workspaceId={workspaceId} />
+        </SectionAccordion>
+      )}
 
       {workspaceId !== null && (
         <SectionAccordion title="Credenciais">

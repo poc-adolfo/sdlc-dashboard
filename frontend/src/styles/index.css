@@ -1303,6 +1303,12 @@ section input[type='text'],
   margin: 0.2rem 0;
 }
 
+.subir-us-result-actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.6rem;
+}
+
 .subir-us-result--success {
   background: var(--accent-wash);
   border-color: var(--accent);
@@ -1337,4 +1343,153 @@ section input[type='text'],
    árvore; sem accordion, mostra o formulário direto. */
 .spec-editor h2 {
   margin-top: 0;
+}
+
+/* Gate de UX (gate-ux-figma.md seções 3/4.2/5) - cartão de decisão + resultado dos mockups, e a lista
+   de alternativas de design system, mesma linguagem visual dos cards de "Subir US". */
+.ux-gate-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  margin-top: 1rem;
+  padding: 0.85rem 1rem;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--surface-muted, var(--accent-wash));
+}
+
+.ux-gate-title {
+  margin: 0;
+  font-weight: 600;
+}
+
+.ux-gate-justificativa,
+.ux-gate-suggestion {
+  margin: 0;
+  color: var(--text-muted);
+}
+
+.ux-gate-actions,
+.ux-gate-override-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.ux-gate-override {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.ux-gate-figma-link {
+  align-self: flex-start;
+  text-decoration: none;
+}
+
+.ux-gate-mockups {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.ux-gate-mockup-item {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.5rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.ux-gate-mockup-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.ux-gate-mockup-row span {
+  flex: 1;
+  font-weight: 500;
+}
+
+.ux-gate-mockup-preview {
+  max-width: 100%;
+  max-height: 420px;
+  object-fit: contain;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #fff;
+  align-self: flex-start;
+}
+
+.design-system-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.8rem;
+}
+
+.design-system-selected,
+.assessment-design-system-selected {
+  margin: 0;
+  color: var(--text-muted);
+}
+
+.design-system-options {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0.8rem;
+}
+
+.design-system-option-card {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.4rem;
+  padding: 0.85rem 1rem;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+}
+
+.design-system-option-card h3 {
+  margin: 0;
+}
+
+.design-system-option-card button {
+  margin-top: auto;
+  align-self: flex-start;
+}
+
+.design-system-option-card--selected {
+  border-color: var(--accent);
+  background: var(--accent-wash);
+}
+
+.design-system-option-badge {
+  margin-top: auto;
+  align-self: flex-start;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.design-system-palette {
+  display: flex;
+  gap: 0.3rem;
+}
+
+.design-system-swatch {
+  width: 1.4rem;
+  height: 1.4rem;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+}
+
+.design-system-justificativa {
+  color: var(--text-muted);
+  font-size: 0.9rem;
 }

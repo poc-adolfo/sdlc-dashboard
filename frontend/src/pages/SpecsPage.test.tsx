@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Outlet, Route, Routes } from 'react-router-dom';
+import { AuthProvider } from '../auth/AuthContext';
 import { WorkspaceProvider, useWorkspace } from '../workspace/WorkspaceContext';
 import type { LayoutContext } from '../components/Layout';
 import { SpecsPage } from './SpecsPage';
@@ -25,13 +26,15 @@ function TestLayout() {
 function renderPage() {
   return render(
     <MemoryRouter initialEntries={['/specs']}>
-      <WorkspaceProvider>
-        <Routes>
-          <Route element={<TestLayout />}>
-            <Route path="/specs" element={<SpecsPage />} />
-          </Route>
-        </Routes>
-      </WorkspaceProvider>
+      <AuthProvider>
+        <WorkspaceProvider>
+          <Routes>
+            <Route element={<TestLayout />}>
+              <Route path="/specs" element={<SpecsPage />} />
+            </Route>
+          </Routes>
+        </WorkspaceProvider>
+      </AuthProvider>
     </MemoryRouter>,
   );
 }
@@ -168,6 +171,9 @@ describe('SpecsPage', () => {
   function withEditorHandlers(extra: (url: string, init?: RequestInit) => Response | Promise<Response> | undefined) {
     return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === 'string' ? input : input.toString();
+      // AuthProvider (mounted around SpecsPage since SpecChatBox reads useAuth() for the chat bubble
+      // label - seção 5.4) probes this on mount regardless of what the test is actually exercising.
+      if (url === '/auth/me') return jsonResponse(200, { username: 'operator' });
       if (url === '/workspaces/7') return jsonResponse(200, { clientId: 1 });
       if (url === '/workspaces/7/spec-projects') return jsonResponse(200, ['checkout']);
       if (url === '/workspaces/7/spec-projects/checkout/specs' && (!init || init.method === undefined)) return jsonResponse(200, [SPEC_ITEM]);

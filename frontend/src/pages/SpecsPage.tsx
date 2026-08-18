@@ -33,7 +33,9 @@ interface SpecFileItem {
 }
 
 interface SubirUsSuccessResponse {
-  pipeline_instance: { externalRef: string };
+  pipeline_instance: { id: number; externalRef: string };
+  tem_tarefas_design: boolean | null;
+  justificativa_design: string | null;
 }
 
 interface SubirUsPendingResponse {
@@ -42,7 +44,7 @@ interface SubirUsPendingResponse {
 }
 
 type SubirUsOutcome =
-  | { kind: 'success'; externalRef: string }
+  | { kind: 'success'; externalRef: string; pipelineInstanceId: number; temTarefasDesign: boolean | null; justificativaDesign: string | null }
   | { kind: 'pendencias'; pendencias: string[] }
   | { kind: 'error'; message: string };
 
@@ -355,6 +357,235 @@ const SpecTree = forwardRef<
 });
 
 // ---------------------------------------------------------------------------
+// Gate de UX (gate-ux-figma.md seções 3/5): cartão de decisão (Analista sugere, humano confirma) +
+// disparo/polling da geração de mockups em SVG depois de confirmado tem_tarefas_design = true.
+// ---------------------------------------------------------------------------
+
+interface UxMockup {
+  id: number;
+  nome: string;
+}
+
+type UxMockupJobStatus = { status: 'done'; mockups: UxMockup[] } | { status: 'error' } | { status: 'pending' };
+
+function UxGateCard({
+  workspaceId,
+  pipelineInstanceId,
+  specContent,
+  suggestedTemTarefasDesign,
+  justificativaDesign,
+}: {
+  workspaceId: number;
+  pipelineInstanceId: number;
+  specContent: string;
+  suggestedTemTarefasDesign: boolean;
+  justificativaDesign: string | null;
+}) {
+  const [decided, setDecided] = useState(false);
+  const [decidedValue, setDecidedValue] = useState(suggestedTemTarefasDesign);
+  const [overriding, setOverriding] = useState(false);
+  const [motivo, setMotivo] = useState('');
+  const [decisionSubmitting, setDecisionSubmitting] = useState(false);
+  const [decisionError, setDecisionError] = useState<string | null>(null);
+
+  const [generating, setGenerating] = useState(false);
+  const [mockups, setMockups] = useState<UxMockup[] | null>(null);
+  const [generateError, setGenerateError] = useState<string | null>(null);
+  const [figmaProjectUrl, setFigmaProjectUrl] = useState<string | null>(null);
+  const pollSeq = useRef(0);
+
+  // Preview inline do SVG (seção 5, "onde fica o botão de visualizar" - antes só existia copiar/baixar,
+  // o operador tinha que abrir o arquivo baixado num visualizador à parte pra ver o mockup). Guardamos
+  // como Blob URL (não dangerouslySetInnerHTML) porque um <img> carrega SVG num contexto restrito onde
+  // <script> embutido não roda - o conteúdo vem de uma skill remota, não é algo em que confiamos cegamente.
+  const [previewOpen, setPreviewOpen] = useState<number | null>(null);
+  const [previewLoading, setPreviewLoading] = useState<number | null>(null);
+  const [previewUrls, setPreviewUrls] = useState<Record<number, string>>({});
+  const previewUrlsRef = useRef<Record<number, string>>({});
+
+  // As Blob URLs só existem enquanto o card estiver montado - sem isso, cada mockup visualizado vaza
+  // memória até a página recarregar.
+  useEffect(
+    () => () => {
+      Object.values(previewUrlsRef.current).forEach((url) => URL.revokeObjectURL(url));
+    },
+    [],
+  );
+
+  async function handleTogglePreview(mockup: UxMockup) {
+    if (previewOpen === mockup.id) {
+      setPreviewOpen(null);
+      return;
+    }
+    if (!previewUrlsRef.current[mockup.id]) {
+      setPreviewLoading(mockup.id);
+      try {
+        const svg = await api.get<string>(`${mockupsBasePath}/mockups/${mockup.id}/content`);
+        const url = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml' }));
+        previewUrlsRef.current = { ...previewUrlsRef.current, [mockup.id]: url };
+        setPreviewUrls(previewUrlsRef.current);
+      } catch {
+        setGenerateError('Não foi possível carregar o preview. Tente novamente.');
+        return;
+      } finally {
+        setPreviewLoading(null);
+      }
+    }
+    setPreviewOpen(mockup.id);
+  }
+
+  useEffect(() => {
+    api.get<{ figmaProjectUrl: string | null }>(`/workspaces/${workspaceId}/assessments/current`).then(
+      (a) => setFigmaProjectUrl(a.figmaProjectUrl),
+      () => setFigmaProjectUrl(null),
+    );
+  }, [workspaceId]);
+
+  const mockupsBasePath = `/workspaces/${workspaceId}/pipeline-instances/${pipelineInstanceId}/ux-gate`;
+
+  async function submitDecision(value: boolean) {
+    setDecisionSubmitting(true);
+    setDecisionError(null);
+    try {
+      await api.post(`${mockupsBasePath}/decision`, {
+        tem_tarefas_design: value,
+        motivo: value !== suggestedTemTarefasDesign ? motivo.trim() || undefined : undefined,
+      });
+      setDecidedValue(value);
+      setDecided(true);
+      setOverriding(false);
+    } catch {
+      setDecisionError('Não foi possível registrar a decisão. Tente novamente.');
+    } finally {
+      setDecisionSubmitting(false);
+    }
+  }
+
+  async function handleGenerate() {
+    setGenerating(true);
+    setGenerateError(null);
+    const seq = ++pollSeq.current;
+    try {
+      const { requestId } = await api.post<{ requestId: string }>(mockupsBasePath, { spec_content: specContent });
+      while (true) {
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+        if (seq !== pollSeq.current) return;
+        const job = await api.get<UxMockupJobStatus>(`${mockupsBasePath}/${requestId}`);
+        if (job.status === 'done') {
+          setMockups(job.mockups);
+          setGenerating(false);
+          return;
+        }
+        if (job.status === 'error') {
+          setGenerateError('Não foi possível gerar os mockups. Tente novamente.');
+          setGenerating(false);
+          return;
+        }
+      }
+    } catch {
+      if (seq !== pollSeq.current) return;
+      setGenerateError('Não foi possível gerar os mockups. Tente novamente.');
+      setGenerating(false);
+    }
+  }
+
+  async function handleCopy(mockupId: number) {
+    const svg = await api.get<string>(`${mockupsBasePath}/mockups/${mockupId}/content`);
+    await navigator.clipboard.writeText(svg);
+  }
+
+  async function handleDownload(mockup: UxMockup) {
+    const svg = await api.get<string>(`${mockupsBasePath}/mockups/${mockup.id}/content`);
+    const blob = new Blob([svg], { type: 'image/svg+xml' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${mockup.nome}.svg`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  if (!decided) {
+    return (
+      <div className="ux-gate-card" role="status">
+        <p className="ux-gate-title">Esta spec tem tarefas de design de UI?</p>
+        {justificativaDesign && <p className="ux-gate-justificativa">{justificativaDesign}</p>}
+        <p className="ux-gate-suggestion">Sugestão do Analista: {suggestedTemTarefasDesign ? 'Sim' : 'Não'}</p>
+
+        {overriding ? (
+          <div className="ux-gate-override">
+            <label htmlFor="ux-gate-motivo">Motivo (opcional)</label>
+            <input id="ux-gate-motivo" value={motivo} onChange={(e) => setMotivo(e.target.value)} />
+            <div className="ux-gate-override-actions">
+              <button type="button" onClick={() => submitDecision(!suggestedTemTarefasDesign)} disabled={decisionSubmitting}>
+                Confirmar {!suggestedTemTarefasDesign ? 'Sim' : 'Não'}
+              </button>
+              <button type="button" onClick={() => setOverriding(false)} disabled={decisionSubmitting}>
+                Cancelar
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="ux-gate-actions">
+            <button type="button" className="btn-primary" onClick={() => submitDecision(suggestedTemTarefasDesign)} disabled={decisionSubmitting}>
+              {decisionSubmitting ? 'Salvando...' : 'Confirmar'}
+            </button>
+            <button type="button" onClick={() => setOverriding(true)} disabled={decisionSubmitting}>
+              Sobrescrever
+            </button>
+          </div>
+        )}
+        {decisionError && <p role="alert">{decisionError}</p>}
+      </div>
+    );
+  }
+
+  if (!decidedValue) return null;
+
+  return (
+    <div className="ux-gate-card">
+      {mockups === null && (
+        <button type="button" className="btn-primary" onClick={handleGenerate} disabled={generating}>
+          {generating ? 'Gerando mockups...' : 'Gerar mockups'}
+        </button>
+      )}
+      {generateError && <p role="alert">{generateError}</p>}
+
+      {mockups !== null && (
+        <>
+          {figmaProjectUrl && (
+            <a className="btn-primary ux-gate-figma-link" href={figmaProjectUrl} target="_blank" rel="noreferrer">
+              Abrir projeto no Figma
+            </a>
+          )}
+          <ul className="ux-gate-mockups">
+            {mockups.map((m) => (
+              <li key={m.id} className="ux-gate-mockup-item">
+                <div className="ux-gate-mockup-row">
+                  <span>{m.nome}</span>
+                  <button type="button" onClick={() => handleTogglePreview(m)} disabled={previewLoading === m.id}>
+                    {previewLoading === m.id ? 'Carregando...' : previewOpen === m.id ? 'Ocultar' : 'Visualizar'}
+                  </button>
+                  <button type="button" onClick={() => handleCopy(m.id)}>
+                    Copiar SVG
+                  </button>
+                  <button type="button" onClick={() => handleDownload(m)}>
+                    Baixar .svg
+                  </button>
+                </div>
+                {previewOpen === m.id && previewUrls[m.id] && (
+                  <img className="ux-gate-mockup-preview" src={previewUrls[m.id]} alt={m.nome} />
+                )}
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Nível 3: editor de conteúdo + Subir US
 // ---------------------------------------------------------------------------
 
@@ -367,13 +598,14 @@ function SpecEditor({
   workspaceId: number;
   projeto: string;
   fileName: string;
-  onUpdateInChat: (projeto: string, fileName: string) => void;
+  onUpdateInChat: (projeto: string, fileName: string, initialDraft?: string) => void;
 }) {
   const [content, setContent] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
+  const [pendenciasCopied, setPendenciasCopied] = useState(false);
   const [subirUsState, setSubirUsState] = useState<'idle' | 'submitting'>('idle');
   const [outcome, setOutcome] = useState<SubirUsOutcome | null>(null);
   const loadSeq = useRef(0);
@@ -423,13 +655,36 @@ function SpecEditor({
       if ('dor_atendido' in result) {
         setOutcome({ kind: 'pendencias', pendencias: result.pendencias });
       } else {
-        setOutcome({ kind: 'success', externalRef: result.pipeline_instance.externalRef });
+        setOutcome({
+          kind: 'success',
+          externalRef: result.pipeline_instance.externalRef,
+          pipelineInstanceId: result.pipeline_instance.id,
+          temTarefasDesign: result.tem_tarefas_design,
+          justificativaDesign: result.justificativa_design,
+        });
       }
     } catch (error) {
       setOutcome({ kind: 'error', message: error instanceof ApiError && error.status === 502 ? 'Falha ao publicar no repositório. Tente novamente mais tarde.' : 'Não foi possível subir a US. Tente novamente.' });
     } finally {
       setSubirUsState('idle');
     }
+  }
+
+  async function handleCopyPendencias(pendencias: string[]) {
+    try {
+      await navigator.clipboard.writeText(pendencias.map((p) => `- ${p}`).join('\n'));
+      setPendenciasCopied(true);
+      setTimeout(() => setPendenciasCopied(false), 2000);
+    } catch {
+      // Sem fallback: se o clipboard não estiver disponível (permissão negada, contexto não seguro),
+      // a lista de pendências continua visível na tela pra copiar manualmente.
+    }
+  }
+
+  // Leva as pendências apontadas pelo Analista direto pro composer da conversa (seção 5.2/5.4) - o
+  // operador só revisa e manda, em vez de reabrir o chat e reescrever o pedido do zero.
+  function buildAjustesDraft(pendencias: string[]): string {
+    return `Ajuste a spec para atender às pendências apontadas pelo Analista:\n${pendencias.map((p) => `- ${p}`).join('\n')}`;
   }
 
   return (
@@ -469,6 +724,15 @@ function SpecEditor({
               </div>
             </div>
           )}
+          {outcome?.kind === 'success' && outcome.temTarefasDesign !== null && (
+            <UxGateCard
+              workspaceId={workspaceId}
+              pipelineInstanceId={outcome.pipelineInstanceId}
+              specContent={content ?? ''}
+              suggestedTemTarefasDesign={outcome.temTarefasDesign}
+              justificativaDesign={outcome.justificativaDesign}
+            />
+          )}
           {outcome?.kind === 'pendencias' && (
             <div className="subir-us-result subir-us-result--pending" role="alert">
               <span className="subir-us-result-icon" aria-hidden="true">
@@ -481,6 +745,14 @@ function SpecEditor({
                     <li key={p}>{p}</li>
                   ))}
                 </ul>
+                <div className="subir-us-result-actions">
+                  <button type="button" onClick={() => handleCopyPendencias(outcome.pendencias)}>
+                    {pendenciasCopied ? 'Copiado!' : 'Copiar sugestões'}
+                  </button>
+                  <button type="button" onClick={() => onUpdateInChat(projeto, fileName, buildAjustesDraft(outcome.pendencias))}>
+                    Solicitar ajustes
+                  </button>
+                </div>
               </div>
             </div>
           )}
@@ -555,11 +827,15 @@ function SpecChatBox({
   projeto,
   fileName,
   onViewSpec,
+  initialDraft,
+  onInitialDraftConsumed,
 }: {
   workspaceId: number;
   projeto: string;
   fileName: string;
   onViewSpec: (projeto: string, fileName: string) => void;
+  initialDraft?: string | null;
+  onInitialDraftConsumed?: () => void;
 }) {
   // Rótulos dos balões (seção 5.4): o operador aparece pelo nome de usuário logado em vez de "Você"
   // genérico, e o outro lado é rotulado "Agente" em vez do nome interno da skill ("specs").
@@ -581,6 +857,16 @@ function SpecChatBox({
     setError(null);
     pollSeq.current += 1;
   }, [workspaceId, projeto, fileName]);
+
+  // Separado do reset acima: "Solicitar ajustes" (seção 5.3) pode ser clicado de novo com a mesma spec
+  // já aberta no chat, então isto precisa reagir a mudanças em initialDraft por si só, não só a troca de
+  // spec - senão só o primeiro clique preenchia o composer.
+  useEffect(() => {
+    if (!initialDraft) return;
+    setDraft(initialDraft);
+    onInitialDraftConsumed?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialDraft]);
 
   // Acompanha a conversa como qualquer chat moderno (seção 5.4) - rola pro fim a cada mensagem nova ou
   // enquanto a skill está "digitando", sem exigir scroll manual do operador.
@@ -745,13 +1031,16 @@ export function SpecsPage() {
   const [selected, setSelected] = useState<{ projeto: string; fileName: string } | null>(null);
   const [viewing, setViewing] = useState<{ projeto: string; fileName: string } | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [pendingDraft, setPendingDraft] = useState<string | null>(null);
   const treeRef = useRef<SpecTreeHandle>(null);
   const loadSeq = useRef(0);
 
   // Escolher uma spec entra no modo conversa (seção 5.2/5.4) - as duas barras laterais (nav principal e
   // a árvore desta página) só disputam espaço com o chat, então recolhem sozinhas nesse momento.
-  function selectSpec(projeto: string, fileName: string) {
+  // initialDraft (botão "Solicitar ajustes") pré-preenche o composer com o pedido de ajuste já montado.
+  function selectSpec(projeto: string, fileName: string, initialDraft?: string) {
     setSelected({ projeto, fileName });
+    setPendingDraft(initialDraft ?? null);
     setSidebarOpen(false);
     setNavOpen(false);
   }
@@ -860,6 +1149,8 @@ export function SpecsPage() {
               projeto={selected.projeto}
               fileName={selected.fileName}
               onViewSpec={(projeto, fileName) => setViewing({ projeto, fileName })}
+              initialDraft={pendingDraft}
+              onInitialDraftConsumed={() => setPendingDraft(null)}
             />
           </>
         )}
@@ -871,9 +1162,9 @@ export function SpecsPage() {
             workspaceId={workspaceId}
             projeto={viewing.projeto}
             fileName={viewing.fileName}
-            onUpdateInChat={(projeto, fileName) => {
+            onUpdateInChat={(projeto, fileName, initialDraft) => {
               setViewing(null);
-              selectSpec(projeto, fileName);
+              selectSpec(projeto, fileName, initialDraft);
             }}
           />
         </Modal>

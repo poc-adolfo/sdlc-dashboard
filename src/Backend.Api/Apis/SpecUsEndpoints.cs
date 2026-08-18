@@ -59,7 +59,8 @@ public static class SpecUsEndpoints
         var pipeline = new PipelineInstance { WorkspaceId = id, SpecId = spec?.Id, FaseAtual = PipelinePhase.Requisitos, GateStatus = GateStatus.Approved, ExternalRef = external, CreatedAt = DateTime.UtcNow };
         db.PipelineInstances.Add(pipeline);
         await db.SaveChangesAsync(ct);
-        return Results.Json(new { pipeline_instance = new PipelineInstanceResponse(pipeline.Id, pipeline.WorkspaceId, pipeline.SpecId, pipeline.FaseAtual.ToString(), pipeline.GateStatus.ToString(), pipeline.ExternalRef, pipeline.PrRef, pipeline.CreatedAt) }, statusCode: 201);
+        await UxGateEndpoints.RecordSuggestionAsync(db, pipeline.Id, dor, ct);
+        return Results.Json(new { pipeline_instance = new PipelineInstanceResponse(pipeline.Id, pipeline.WorkspaceId, pipeline.SpecId, pipeline.FaseAtual.ToString(), pipeline.GateStatus.ToString(), pipeline.ExternalRef, pipeline.PrRef, pipeline.CreatedAt), tem_tarefas_design = dor.TemTarefasDesign, justificativa_design = dor.JustificativaDesign }, statusCode: 201);
     }
 
     internal static async Task<string?> Publish(Workspace workspace, string title, string body, PlatformContentClient platform, CancellationToken ct)

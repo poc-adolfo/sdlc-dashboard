@@ -155,11 +155,18 @@ public sealed class AssessmentTests
     }
 
     [Fact]
-    public async Task CurrentReturns404OnceConcluded()
+    public async Task CurrentStillReturnsTheAssessmentOnceConcluded()
     {
+        // Bug fix: this used to 404 once concluded (only looked at Status == EmAndamento), which reset
+        // WorkspacePage's form (client, content) to empty/template on every reload of an already-
+        // concluded workspace, even though the assessment was still there in the database.
         using var f = New(); var (c, w, a) = await Seed(f, "Concludes");
         await c.PostAsync($"/workspaces/{w}/assessments/{a}/concluir", null);
-        Assert.Equal(HttpStatusCode.NotFound, (await c.GetAsync($"/workspaces/{w}/assessments/current")).StatusCode);
+        var response = await c.GetAsync($"/workspaces/{w}/assessments/current");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var current = await response.Content.ReadFromJsonAsync<AssessmentResponse>();
+        Assert.Equal(a, current!.Id);
+        Assert.Equal("concluido", current.Status);
     }
 
     [Fact]

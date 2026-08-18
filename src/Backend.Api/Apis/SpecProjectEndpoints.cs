@@ -157,7 +157,8 @@ public static class SpecProjectEndpoints
         var pipeline = new PipelineInstance { WorkspaceId = id, SpecId = null, FaseAtual = PipelinePhase.Requisitos, GateStatus = GateStatus.Approved, ExternalRef = external, CreatedAt = DateTime.UtcNow };
         db.PipelineInstances.Add(pipeline);
         await db.SaveChangesAsync(ct);
-        return Results.Json(new { pipeline_instance = new PipelineInstanceResponse(pipeline.Id, pipeline.WorkspaceId, pipeline.SpecId, pipeline.FaseAtual.ToString(), pipeline.GateStatus.ToString(), pipeline.ExternalRef, pipeline.PrRef, pipeline.CreatedAt) }, statusCode: 201);
+        await UxGateEndpoints.RecordSuggestionAsync(db, pipeline.Id, dor, ct);
+        return Results.Json(new { pipeline_instance = new PipelineInstanceResponse(pipeline.Id, pipeline.WorkspaceId, pipeline.SpecId, pipeline.FaseAtual.ToString(), pipeline.GateStatus.ToString(), pipeline.ExternalRef, pipeline.PrRef, pipeline.CreatedAt), tem_tarefas_design = dor.TemTarefasDesign, justificativa_design = dor.JustificativaDesign }, statusCode: 201);
     }
 
     // Talks to a *different* Hermes-hosted skill/profile than AnalystDorGate (Specs:ApiServerBaseUrl,
@@ -215,23 +216,19 @@ public static class SpecProjectEndpoints
         var messages = new List<object>();
         if (assessment is not null)
         {
-            messages.Add(new
-            {
-                role = "system",
-                content = "Premissas do assessment deste workspace (linha de negocio do cliente, stack, "
+            messages.AddRange(ChunkedSystemMessage(
+                "Premissas do assessment deste workspace (linha de negocio do cliente, stack, "
                     + "arquiteturas presentes, constraints de seguranca) - use como contexto para suas "
-                    + "sugestoes, sem repetir o texto de volta sem necessidade:\n\n" + assessment.Content,
-            });
+                    + "sugestoes, sem repetir o texto de volta sem necessidade:\n\n",
+                assessment.Content));
         }
         if (!string.IsNullOrWhiteSpace(currentContent))
         {
-            messages.Add(new
-            {
-                role = "system",
-                content = "Conteudo atual salvo desta spec (o operador pode estar revisando/continuando "
+            messages.AddRange(ChunkedSystemMessage(
+                "Conteudo atual salvo desta spec (o operador pode estar revisando/continuando "
                     + "algo ja existente, nao necessariamente comecando do zero) - use como ponto de "
-                    + "partida quando fizer sentido:\n\n" + currentContent,
-            });
+                    + "partida quando fizer sentido:\n\n",
+                currentContent));
         }
         messages.AddRange(request.Messages.Select(m => (object)new { role = m.Role, content = m.Content }));
 
@@ -247,46 +244,180 @@ public static class SpecProjectEndpoints
         return Results.Json(new { requestId = jobId }, statusCode: StatusCodes.Status202Accepted);
     }
 
+    // Alem do chunking na saida (ChunkedSystemMessage), 2026-08-18 mostrou que isso sozinho nao basta: o
+    // modelo remoto ainda pode decidir parar a propria geracao no meio da frase, independente do tamanho
+    // do que foi mandado. A primeira versao disto pedia pra "regenerar tudo de novo, completo" - mas
+    // regenerar do zero bate no mesmo teto de tokens de saida de novo (observado ao vivo: 3 tentativas,
+    // cortando em pontos ligeiramente diferentes a cada vez, nunca terminando). MaxContinuationAttempts
+    // agora pede continuacao de verdade - "continue exatamente de onde parou" - e cola o que voltar no
+    // conteudo ja acumulado, em vez de descartar e recomecar.
+    private const int MaxContinuationAttempts = 2;
+
     private static async Task RunChatJobAsync(string jobId, string baseUrl, string? key, List<object> messages, HttpClient httpClient, IBlobStore blobs, string blobPath, SpecChatJobStore jobStore, ILogger logger)
     {
         try
         {
-            using var req = new HttpRequestMessage(HttpMethod.Post, new Uri(new Uri(baseUrl.TrimEnd('/') + "/"), "v1/chat/completions"))
+            string? accumulated = null;
+            for (var attempt = 0; ; attempt++)
             {
-                Content = JsonContent.Create(new { model = "specs", messages })
-            };
-            if (!string.IsNullOrWhiteSpace(key)) req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", key);
+                var (reply, chunkContent) = await CallSpecsSkillAsync(baseUrl, key, messages, httpClient);
+                if (reply is null) { jobStore.Fail(jobId); return; }
 
-            using var response = await httpClient.SendAsync(req, CancellationToken.None);
-            response.EnsureSuccessStatusCode();
-            using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync(CancellationToken.None));
-            var reply = doc.RootElement.GetProperty("choices")[0].GetProperty("message").GetProperty("content").GetString();
-            if (reply is null) { jobStore.Fail(jobId); return; }
-
-            // Iteração termina quando o SOUL decide que a spec está pronta e responde com o bloco
-            // ```spec-final ... ``` (mesmo padrão de "resposta estruturada reconhecida pelo backend" já
-            // usado pro dor_atendido/pendencias do Analista) - a partir daí o backend grava no blob em
-            // nome da skill (que não tem acesso a ferramentas) e o operador só vê "spec pronta" + o botão
-            // de visualizar, sem precisar copiar/colar nada.
-            var finalMatch = Regex.Match(reply, @"```spec-final\s*\r?\n(.*?)```", RegexOptions.Singleline);
-            if (finalMatch.Success)
-            {
-                var finalContent = finalMatch.Groups[1].Value.Trim();
-                if (finalContent.Length > 0)
+                if (attempt == 0)
                 {
-                    await blobs.WriteAsync(blobPath, finalContent, CancellationToken.None);
+                    if (chunkContent is null)
+                    {
+                        // Sem bloco ```spec-final``` nenhum - so uma resposta normal de conversa (pergunta,
+                        // sugestao), nada pra validar ou gravar.
+                        jobStore.Complete(jobId, reply, finalized: false);
+                        return;
+                    }
+                    accumulated = chunkContent;
+                }
+                else
+                {
+                    // Turno de continuacao: o pedido abaixo pede pra nao reabrir o bloco, mas se a skill
+                    // reabrir mesmo assim, o conteudo de dentro dele conta como a continuacao; caso
+                    // contrario usa a resposta crua. De qualquer forma isto sempre cola no que ja foi
+                    // acumulado - nunca substitui.
+                    accumulated = AppendContinuation(accumulated!, (chunkContent ?? reply).Trim());
+                }
+
+                if (!LooksTruncated(accumulated))
+                {
+                    // Iteração termina quando o SOUL decide que a spec está pronta (bloco ```spec-final```
+                    // completo, seja de primeira ou depois de continuar) - a partir daí o backend grava no
+                    // blob em nome da skill (que não tem acesso a ferramentas) e o operador só vê "spec
+                    // pronta" + o botão de visualizar, sem precisar copiar/colar nada.
+                    await blobs.WriteAsync(blobPath, accumulated, CancellationToken.None);
                     jobStore.Complete(jobId, "Sua spec ficou pronta.", finalized: true);
                     return;
                 }
-            }
 
-            jobStore.Complete(jobId, reply, finalized: false);
+                // O trecho final (nao o conteudo inteiro, que pode conter dado sensivel do workspace) vai
+                // no log pra dar pra confirmar um positivo verdadeiro depois, em vez de so inferir pelo
+                // padrao de tempo de resposta - foi assim que a primeira ocorrencia (2026-08-18) foi
+                // diagnosticada, sem essa evidencia direta.
+                var tail = accumulated.Length > 200 ? accumulated[^200..] : accumulated;
+                if (attempt < MaxContinuationAttempts)
+                {
+                    logger.LogWarning("Specs skill spec-final block looks truncated (attempt {Attempt}/{Max}); asking it to continue. Tail: {Tail}", attempt + 1, MaxContinuationAttempts + 1, tail);
+                    messages.Add(new { role = "assistant", content = reply });
+                    messages.Add(new
+                    {
+                        role = "user",
+                        content = "O texto que voce gerou ate agora parece ter sido cortado antes de terminar "
+                            + "(terminou em: \"" + tail + "\"). Continue exatamente de onde parou, sem repetir "
+                            + "nada do que ja foi escrito e sem reabrir um novo bloco ```spec-final``` - "
+                            + "responda so com o texto que falta.",
+                    });
+                    continue;
+                }
+
+                logger.LogWarning("Specs skill spec-final block still looks truncated after {Attempts} attempts; discarding without saving. Tail: {Tail}", attempt + 1, tail);
+                jobStore.Complete(jobId, "A resposta da skill parece ter sido cortada antes de terminar, mesmo depois de pedir pra continuar. Tente novamente.", finalized: false);
+                return;
+            }
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException or KeyNotFoundException or UriFormatException)
         {
             logger.LogWarning(ex, "Specs skill chat failed");
             jobStore.Fail(jobId);
         }
+    }
+
+    // O modelo pode repetir um pedaco do que ja escreveu antes de continuar, mesmo pedindo pra nao
+    // repetir - procura o maior sufixo do conteudo acumulado que tambem aparece como prefixo da
+    // continuacao e descarta essa sobreposicao antes de colar. Heuristica simples (nao tenta achar
+    // sobreposicoes no meio do texto), mas cobre o caso mais comum sem custar quase nada.
+    internal static string AppendContinuation(string accumulated, string continuation)
+    {
+        continuation = continuation.TrimStart();
+        const int overlapProbe = 80;
+        var probe = accumulated.Length > overlapProbe ? accumulated[^overlapProbe..] : accumulated;
+        for (var len = Math.Min(probe.Length, continuation.Length); len >= 15; len--)
+        {
+            if (string.Equals(probe[^len..], continuation[..len], StringComparison.Ordinal))
+            {
+                continuation = continuation[len..].TrimStart();
+                break;
+            }
+        }
+        if (continuation.Length == 0) return accumulated;
+        var separator = accumulated.EndsWith('\n') || continuation.StartsWith('\n') ? "" : "\n";
+        return accumulated + separator + continuation;
+    }
+
+    private static async Task<(string? Reply, string? FinalContent)> CallSpecsSkillAsync(string baseUrl, string? key, List<object> messages, HttpClient httpClient)
+    {
+        using var req = new HttpRequestMessage(HttpMethod.Post, new Uri(new Uri(baseUrl.TrimEnd('/') + "/"), "v1/chat/completions"))
+        {
+            Content = JsonContent.Create(new { model = "specs", messages })
+        };
+        if (!string.IsNullOrWhiteSpace(key)) req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", key);
+
+        // CancellationToken.None de proposito: sobrevive ao fim do request 202 que disparou o job (ver
+        // comentario em Chat acima).
+        using var response = await httpClient.SendAsync(req, CancellationToken.None);
+        response.EnsureSuccessStatusCode();
+        using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync(CancellationToken.None));
+        var reply = doc.RootElement.GetProperty("choices")[0].GetProperty("message").GetProperty("content").GetString();
+        if (reply is null) return (null, null);
+
+        var finalMatch = Regex.Match(reply, @"```spec-final\s*\r?\n(.*?)```", RegexOptions.Singleline);
+        if (!finalMatch.Success) return (reply, null);
+        var finalContent = finalMatch.Groups[1].Value.Trim();
+        return (reply, finalContent.Length > 0 ? finalContent : null);
+    }
+
+    private const int MaxSystemMessageChars = 4000;
+    // Reserva espaco pro cabecalho "(parte X/Y)\n\n" que cada pedaco leva - sem isso, um pedaco de
+    // conteudo do tamanho exato do limite mais o cabecalho ultrapassava MaxSystemMessageChars.
+    private const int ChunkHeaderReserve = 32;
+
+    // Premissas do assessment e o conteudo atual da spec so crescem com o tempo (a spec-autorizacao.md
+    // real que motivou isto passou de 15KB) - mandar tudo isso como uma unica mensagem de sistema
+    // gigante cada turno estreita o espaco que sobra pro modelo remoto terminar a propria resposta sem
+    // cortar (ver LooksTruncated). Quebrar em varias mensagens de sistema sequenciais, preferindo cortar
+    // em quebras de linha, mantem o mesmo conteudo mas em pedacos menores por mensagem.
+    internal static IEnumerable<object> ChunkedSystemMessage(string intro, string content)
+    {
+        var full = intro + content;
+        if (full.Length <= MaxSystemMessageChars)
+        {
+            yield return new { role = "system", content = full };
+            yield break;
+        }
+
+        var chunkLimit = MaxSystemMessageChars - ChunkHeaderReserve;
+        var chunks = new List<string>();
+        var start = 0;
+        while (start < full.Length)
+        {
+            var end = Math.Min(start + chunkLimit, full.Length);
+            if (end < full.Length)
+            {
+                var breakAt = full.LastIndexOf('\n', end - 1, end - start);
+                if (breakAt > start) end = breakAt;
+            }
+            chunks.Add(full[start..end]);
+            start = end;
+        }
+        for (var i = 0; i < chunks.Count; i++)
+            yield return new { role = "system", content = $"(parte {i + 1}/{chunks.Count})\n\n{chunks[i]}" };
+    }
+
+    // Heuristica deliberadamente barata (sem chamar o Analista de novo so pra validar isto): specs
+    // legitimas praticamente nunca terminam o documento com pontuacao que anuncia continuacao (":", ",",
+    // ";", "-") nem logo apos abrir um titulo sem corpo nenhum - ambos os padroes batem com o caso
+    // observado (secao 2.1 cortada bem depois de um ":"). Falsos positivos ficam do lado seguro: o pior
+    // caso e pedir pra skill tentar de novo, nao gravar um blob truncado sem avisar ninguem.
+    internal static bool LooksTruncated(string content)
+    {
+        var lastLine = content.TrimEnd().Split('\n')[^1].TrimEnd();
+        if (lastLine.Length == 0) return false;
+        if (Regex.IsMatch(lastLine, @"^#{1,6}\s")) return true;
+        return lastLine[^1] is ':' or ',' or ';' or '-';
     }
 
     private static IResult GetChatJob(long id, string projeto, string fileName, string requestId, SpecChatJobStore jobStore)

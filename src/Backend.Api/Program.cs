@@ -26,6 +26,8 @@ builder.Services.AddSingleton<LoginAttemptService>();
 builder.Services.AddSingleton<Backend.Api.Services.AnalystDorGate>();
 builder.Services.AddSingleton<Backend.Api.Services.PlatformContentClient>();
 builder.Services.AddSingleton<Backend.Api.Services.SpecChatJobStore>();
+builder.Services.AddSingleton<Backend.Api.Services.AsyncJobStore<Backend.Api.Apis.DesignSystemJobResult>>();
+builder.Services.AddSingleton<Backend.Api.Services.AsyncJobStore<Backend.Api.Apis.UxGateJobResult>>();
 builder.Services.AddSingleton<Backend.Api.Services.ISecretStore, Backend.Api.Services.KubernetesSecretStore>();
 if (string.Equals(builder.Configuration["BlobStorage:Provider"], "S3", StringComparison.OrdinalIgnoreCase))
     builder.Services.AddSingleton<Backend.Api.Services.IBlobStore, Backend.Api.Services.S3BlobStore>();
@@ -47,6 +49,10 @@ builder.Services.AddHttpClient("Analista", (client, http) => { http.Timeout = Ti
 // (120s vs. Analista's 30s) no longer risks tying up a browser-facing request for that long - it only
 // bounds how long a background job can run before being treated as failed.
 builder.Services.AddHttpClient("Specs", (client, http) => { http.Timeout = TimeSpan.FromSeconds(builder.Configuration.GetValue("Specs:TimeoutSeconds", 120)); }).ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler { AllowAutoRedirect = false });
+// Ux:ApiServerBaseUrl (perfil Hermes `ux`, gate-ux-figma.md seções 4/4.2/5): mesmo mecanismo de
+// Specs (chamada async, job+polling, generosa por padrão pois não bloqueia nenhuma requisição
+// browser-facing) - explora design system e gera mockups SVG, ambos potencialmente respostas longas.
+builder.Services.AddHttpClient("Ux", (client, http) => { http.Timeout = TimeSpan.FromSeconds(builder.Configuration.GetValue("Ux:TimeoutSeconds", 120)); }).ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler { AllowAutoRedirect = false });
 builder.Services.AddDbContext<AppDbContext>(o => o.UseSqlite(builder.Configuration.GetConnectionString("Default") ?? $"Data Source={builder.Configuration["DatabasePath"] ?? "workspace.db"}"));
 // Security review on PR #15: /webhooks/* is public and unauthenticated-until-HMAC-checked, so besides
 // the per-request body size cap it also needs a cap on request *volume* per source, or a caller without
@@ -72,7 +78,7 @@ builder.Services.AddRateLimiter(options =>
 builder.Services.AddOpenTelemetry().WithTracing(t => t.AddAspNetCoreInstrumentation().AddConsoleExporter()).WithMetrics(m => m.AddAspNetCoreInstrumentation().AddConsoleExporter());
 builder.Services.AddEndpointsApiExplorer(); builder.Services.AddSwaggerGen(c => { c.AddSecurityDefinition("sessionCookie", new Microsoft.OpenApi.Models.OpenApiSecurityScheme { Type = Microsoft.OpenApi.Models.SecuritySchemeType.ApiKey, In = Microsoft.OpenApi.Models.ParameterLocation.Cookie, Name = "sdlc_session" }); c.OperationFilter<SessionSecurityOperationFilter>(); });
 var app = builder.Build();
-app.UseForwardedHeaders(new ForwardedHeadersOptions { ForwardedHeaders = ForwardedHeaders.XForwardedFor, KnownProxies = { IPAddress.Loopback } }); using (var scope = app.Services.CreateScope()) scope.ServiceProvider.GetRequiredService<AppDbContext>().Database.Migrate(); app.UseSerilogRequestLogging(); app.UseRateLimiter(); app.UseMiddleware<SessionMiddleware>(); app.UseSwagger(); app.UseSwaggerUI(); app.MapAuthEndpoints(); app.MapWorkspaceEndpoints(); app.MapSpecUsEndpoints(); app.MapAssessmentEndpoints(); app.MapSpecListingEndpoints(); app.MapSpecProjectEndpoints(); app.MapCredentialEndpoints(); app.MapWebhookEndpoints(); app.MapPhaseTransitionEndpoints(); app.MapDashboardEndpoints(); app.MapHealthEndpoints();
+app.UseForwardedHeaders(new ForwardedHeadersOptions { ForwardedHeaders = ForwardedHeaders.XForwardedFor, KnownProxies = { IPAddress.Loopback } }); using (var scope = app.Services.CreateScope()) scope.ServiceProvider.GetRequiredService<AppDbContext>().Database.Migrate(); app.UseSerilogRequestLogging(); app.UseRateLimiter(); app.UseMiddleware<SessionMiddleware>(); app.UseSwagger(); app.UseSwaggerUI(); app.MapAuthEndpoints(); app.MapWorkspaceEndpoints(); app.MapSpecUsEndpoints(); app.MapAssessmentEndpoints(); app.MapSpecListingEndpoints(); app.MapSpecProjectEndpoints(); app.MapCredentialEndpoints(); app.MapWebhookEndpoints(); app.MapPhaseTransitionEndpoints(); app.MapDashboardEndpoints(); app.MapHealthEndpoints(); app.MapDesignSystemEndpoints(); app.MapUxGateEndpoints();
 // Resource/tenant authorization beyond the single-operator session (including on the /subir-us publish
 // endpoint and the assessment endpoints below) is intentionally out of scope for this phase; see
 // frontend-operacional-sdlc-hermes.md sections 7 and 11 (single operator login, no multitenant support

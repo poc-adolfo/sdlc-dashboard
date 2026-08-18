@@ -28,15 +28,24 @@ public static class AssessmentEndpoints
         return assessment is null || assessment.WorkspaceId != id ? Results.NotFound() : Results.Ok(AssessmentResponse.From(assessment));
     }
 
-    // Lets WorkspacePage restore the in-progress assessment (client + draft content) after a reload or
-    // a return visit, instead of always dropping back to the empty ClientPicker even though the content
-    // was already saved - the assessment_id needed for GET .../{aid} isn't known to the frontend until
-    // then, so it has nowhere else to get it from.
+    // Lets WorkspacePage restore the assessment (client + content) after a reload or a return visit,
+    // instead of always dropping back to the empty ClientPicker even though everything was already
+    // saved - the assessment_id needed for GET .../{aid} isn't known to the frontend until then, so it
+    // has nowhere else to get it from.
+    //
+    // Bug fix: this used to filter to Status == EmAndamento only, which defeated its own purpose for
+    // any workspace that had already been through "Concluir" once - Conclude flips the row to
+    // Concluido, so a reload right after concluding (or any later visit) found nothing here and the
+    // form reset to empty/template, silently discarding the client selection and content on screen even
+    // though the database still had them. The most recent assessment regardless of status is always the
+    // right one to restore - "em andamento" or "concluido" are both valid states to keep editing from.
     private static async Task<IResult> GetCurrent(long id, AppDbContext db, CancellationToken ct)
     {
         if (!await db.Workspaces.AnyAsync(w => w.Id == id, ct)) return Results.NotFound();
         var assessment = await db.Assessments.AsNoTracking().Include(a => a.Client)
-            .SingleOrDefaultAsync(a => a.WorkspaceId == id && a.Status == AssessmentStatus.EmAndamento, ct);
+            .Where(a => a.WorkspaceId == id)
+            .OrderByDescending(a => a.UpdatedAt)
+            .FirstOrDefaultAsync(ct);
         return assessment is null ? Results.NotFound() : Results.Ok(AssessmentResponse.From(assessment));
     }
 
@@ -82,8 +91,17 @@ public static class AssessmentEndpoints
             assessment = await db.Assessments.SingleOrDefaultAsync(a => a.WorkspaceId == id && a.Status == AssessmentStatus.EmAndamento, ct);
         }
         var now = DateTime.UtcNow;
-        if (assessment is null) { assessment = new Assessment { WorkspaceId = id, Client = client, ClientId = client.Id, Content = content, CreatedAt = now, UpdatedAt = now }; db.Assessments.Add(assessment); }
-        else { assessment.Client = client; assessment.ClientId = client.Id; if (request.Content is not null) assessment.Content = request.Content; assessment.UpdatedAt = now; }
+        if (assessment is null)
+        {
+            // A fresh revision row (workspace already concluded once, no explicit assessment_id given)
+            // still needs to carry forward the design system already chosen for this workspace (seção
+            // 4.2) - otherwise every re-save after "Concluir" would silently drop that selection even
+            // though nothing about it changed.
+            var previous = await db.Assessments.AsNoTracking().Where(a => a.WorkspaceId == id).OrderByDescending(a => a.UpdatedAt).FirstOrDefaultAsync(ct);
+            assessment = new Assessment { WorkspaceId = id, Client = client, ClientId = client.Id, Content = content, FigmaProjectUrl = request.FigmaProjectUrl, SelectedDesignSystemProposalId = previous?.SelectedDesignSystemProposalId, CreatedAt = now, UpdatedAt = now };
+            db.Assessments.Add(assessment);
+        }
+        else { assessment.Client = client; assessment.ClientId = client.Id; if (request.Content is not null) assessment.Content = request.Content; if (request.FigmaProjectUrl is not null) assessment.FigmaProjectUrl = request.FigmaProjectUrl; assessment.UpdatedAt = now; }
         await db.SaveChangesAsync(ct);
 
         // Best-effort: the database row is the system of record (see AssessmentResponse below), this is
@@ -119,9 +137,9 @@ public static class AssessmentEndpoints
     }
 }
 
-public sealed record AssessmentRequest([property: JsonPropertyName("assessment_id")] long? AssessmentId = null, [property: JsonPropertyName("client_id")] long? ClientId = null, [property: JsonPropertyName("client_name")] string? ClientName = null, [property: JsonPropertyName("content")] string? Content = null);
+public sealed record AssessmentRequest([property: JsonPropertyName("assessment_id")] long? AssessmentId = null, [property: JsonPropertyName("client_id")] long? ClientId = null, [property: JsonPropertyName("client_name")] string? ClientName = null, [property: JsonPropertyName("content")] string? Content = null, [property: JsonPropertyName("figma_project_url")] string? FigmaProjectUrl = null);
 public sealed record ClientResponse(long Id, string Name);
-public sealed record AssessmentResponse(long Id, long WorkspaceId, long ClientId, string ClientName, string Content, string Status, DateTime CreatedAt, DateTime UpdatedAt)
+public sealed record AssessmentResponse(long Id, long WorkspaceId, long ClientId, string ClientName, string Content, string? FigmaProjectUrl, long? SelectedDesignSystemProposalId, string Status, DateTime CreatedAt, DateTime UpdatedAt)
 {
-    public static AssessmentResponse From(Assessment a) => new(a.Id, a.WorkspaceId, a.ClientId, a.Client?.Name ?? string.Empty, a.Content, a.Status == AssessmentStatus.Concluido ? "concluido" : "em_andamento", a.CreatedAt, a.UpdatedAt);
+    public static AssessmentResponse From(Assessment a) => new(a.Id, a.WorkspaceId, a.ClientId, a.Client?.Name ?? string.Empty, a.Content, a.FigmaProjectUrl, a.SelectedDesignSystemProposalId, a.Status == AssessmentStatus.Concluido ? "concluido" : "em_andamento", a.CreatedAt, a.UpdatedAt);
 }

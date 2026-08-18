@@ -3,6 +3,7 @@ using System;
 using Backend.Persistence.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -10,9 +11,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace Backend.Persistence.Data.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260818143323_AddUxGate")]
+    partial class AddUxGate
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder.HasAnnotation("ProductVersion", "8.0.8");
@@ -36,9 +39,6 @@ namespace Backend.Persistence.Data.Migrations
                     b.Property<string>("FigmaProjectUrl")
                         .HasColumnType("TEXT");
 
-                    b.Property<long?>("SelectedDesignSystemProposalId")
-                        .HasColumnType("INTEGER");
-
                     b.Property<int>("Status")
                         .HasColumnType("INTEGER");
 
@@ -51,8 +51,6 @@ namespace Backend.Persistence.Data.Migrations
                     b.HasKey("Id");
 
                     b.HasIndex("ClientId");
-
-                    b.HasIndex("SelectedDesignSystemProposalId");
 
                     b.HasIndex("WorkspaceId");
 
@@ -452,11 +450,6 @@ namespace Backend.Persistence.Data.Migrations
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
 
-                    b.HasOne("Backend.Persistence.Domain.DesignSystemProposal", "SelectedDesignSystemProposal")
-                        .WithMany()
-                        .HasForeignKey("SelectedDesignSystemProposalId")
-                        .OnDelete(DeleteBehavior.Restrict);
-
                     b.HasOne("Backend.Persistence.Domain.Workspace", "Workspace")
                         .WithMany("Assessments")
                         .HasForeignKey("WorkspaceId")
@@ -464,8 +457,6 @@ namespace Backend.Persistence.Data.Migrations
                         .IsRequired();
 
                     b.Navigation("Client");
-
-                    b.Navigation("SelectedDesignSystemProposal");
 
                     b.Navigation("Workspace");
                 });
